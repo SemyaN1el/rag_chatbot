@@ -2,7 +2,7 @@ from qdrant_client import QdrantClient
 
 from langchain_qdrant import QdrantVectorStore
 
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 
 from langchain_ollama import ChatOllama
 
