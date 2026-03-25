@@ -1,0 +1,54 @@
+# Инициализация репозитория
+git init
+
+# Создаём .gitignore
+echo .venv/ >> .gitignore
+echo __pycache__/ >> .gitignore
+echo *.pyc >> .gitignore
+echo qdrant_storage/ >> .gitignore
+echo data/ >> .gitignore
+
+# Первый коммит — базовый RAG
+git add .
+git commit -m "init: базовый RAG чат-бот"
+
+# Привязываем к GitHub (один раз)
+git remote add origin https://github.com/ТВО_ИМЯ/rag_chatbot.git
+git push -u origin main
+
+# ── Неделя 3: гибридный поиск ──────────────────────────────
+
+# Создаём ветку для новой фичи
+git checkout -b feature/hybrid-search
+
+# ... пишем hybrid_search.py, hybrid_chat.py, evaluate.py ...
+
+# Убираем __pycache__ из отслеживания
+git rm -r --cached __pycache__/
+
+# Коммитим всё что написали в ветке
+git add .
+git commit -m "feat: hybrid search, hybrid chat, ragas evaluation"
+
+# Пушим ветку на GitHub
+git push origin feature/hybrid-search
+
+# Вливаем в main
+git checkout main
+git merge feature/hybrid-search
+git push origin main
+
+# Удаляем ветку — она уже не нужна
+git branch -d feature/hybrid-search
+git push origin --delete feature/hybrid-search
+
+# Проверяем историю
+git log --oneline
+```
+
+---
+
+Итоговая история в `git log` будет выглядеть примерно так:
+```
+a3f9c21 (HEAD -> main) feat: hybrid search, hybrid chat, ragas evaluation
+be76b57 init: базовый RAG чат-бот
