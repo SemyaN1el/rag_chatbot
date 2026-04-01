@@ -1,167 +1,234 @@
 # RAG Chatbot
 
-Чат-бот для работы с PDF документами на основе RAG (Retrieval-Augmented Generation).
-Поддерживает векторный и гибридный поиск (BM25 + векторный + RRF).
+Локальный RAG-чатбот по PDF-документу с двумя режимами retrieval:
+- векторный поиск через Qdrant
+- гибридный поиск через BM25 + vector search + RRF
+
+Проект сейчас ориентирован на качественную работу с одним PDF за раз.
 
 ## Стек
 
-- **LangChain** — оркестрация RAG pipeline
-- **Qdrant** — векторная база данных
-- **Ollama** — локальный LLM inference
-- **sentence-transformers** — модель эмбеддингов (multilingual-e5-large)
-- **FAISS** — векторный поиск (Проект 1)
-- **rank_bm25** — BM25 поиск
-- **RAGAS** — оценка качества RAG
+- FastAPI
+- LangChain
+- Qdrant
+- Ollama
+- sentence-transformers
+- rank-bm25
+- PostgreSQL
+- Redis
+- RAGAS
 
 ## Структура проекта
-```
+
+```text
 rag_chatbot/
-├── config.py           # настройки проекта
-├── ingest.py           # загрузка PDF и индексация в Qdrant
-├── chat.py             # чат-бот на основе векторного поиска
-├── hybrid_search.py    # гибридный поиск BM25 + векторный + RRF
-├── hybrid_chat.py      # чат-бот на основе гибридного поиска
-└── evaluate.py         # оценка качества через RAGAS
+├── app/
+│   ├── main.py
+│   ├── routers/chat.py
+│   └── services/
+├── config.py
+├── ingest.py
+├── chat.py
+├── hybrid_chat.py
+├── hybrid_search.py
+├── evaluate.py
+├── docker-compose.yml
+└── requirements.txt
 ```
 
 ## Требования
 
-- Python 3.12+
+- Python 3.12
 - Docker Desktop
 - Ollama
 
 ## Установка
 
-### 1. Клонируем репозиторий
+### 1. Клонировать репозиторий
+
 ```bash
-git clone https://github.com/ИМЯ/rag_chatbot.git
+git clone https://github.com/SemyaN1el/rag_chatbot.git
 cd rag_chatbot
 ```
 
-### 2. Создаём виртуальное окружение
+### 2. Создать виртуальное окружение
+
 ```bash
 python -m venv .venv
+```
 
-# Windows
-.venv\Scripts\activate
+Windows:
 
-# Mac/Linux
+```powershell
+.venv\Scripts\Activate.ps1
+```
+
+Linux/macOS:
+
+```bash
 source .venv/bin/activate
 ```
 
-### 3. Устанавливаем зависимости
+### 3. Установить зависимости
+
 ```bash
-pip install langchain langchain-community langchain-ollama langchain-qdrant
-pip install langchain-text-splitters langchain-core
-pip install qdrant-client sentence-transformers pypdf
-pip install rank_bm25 ragas datasets
+pip install -r requirements.txt
 ```
 
-### 4. Запускаем Qdrant через Docker
+Альтернатива через `pyproject.toml`:
+
 ```bash
-docker run -p 6333:6333 \
-  -v C:/путь/до/rag_chatbot/qdrant_storage:/qdrant/storage \
-  qdrant/qdrant
+pip install -e .
 ```
 
-### 5. Устанавливаем и запускаем Ollama
+### 4. Поднять инфраструктуру
 
-Скачать с [ollama.com](https://ollama.com), затем:
+```bash
+docker compose up -d
+```
+
+Это поднимет:
+- Qdrant на `http://localhost:6333`
+- PostgreSQL на `localhost:5432`
+- Redis на `localhost:6379`
+
+### 5. Подготовить Ollama
+
 ```bash
 ollama pull llama3.2
 ollama serve
 ```
 
-## Использование
+## Запуск
 
-### Шаг 1 — Индексируем PDF
+### 1. Индексация PDF
 
-Передай путь к нужному PDF явно:
-```bash
-python ingest.py data/document.pdf
-```
+Если в папке `data/` лежит ровно один PDF:
 
-Если в папке `data/` лежит ровно один PDF, можно запустить и без аргумента:
 ```bash
 python ingest.py
 ```
 
-### Шаг 2 — Запускаем чат-бот
+Если PDF несколько, передайте путь явно:
 
-Векторный поиск:
+```bash
+python ingest.py data/document.pdf
+```
+
+Важно: текущая реализация пересоздаёт коллекцию в Qdrant, то есть активным остаётся один документ.
+
+### 2. Консольный чат
+
+Векторный режим:
+
 ```bash
 python chat.py
 ```
 
-Гибридный поиск (BM25 + векторный + RRF):
+Гибридный режим:
+
 ```bash
 python hybrid_chat.py
 ```
 
-### Шаг 3 — Оцениваем качество (опционально)
-Создай файл `data/eval_questions.json` со структурой:
-```json
-[
-  {
-    "question": "Какая форма итоговой аттестации предусмотрена документом?",
-    "ground_truth": "Итоговая аттестация проводится в форме защиты выпускной квалификационной работы."
-  }
-]
+### 3. API
+
+```bash
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-После этого запусти:
+После запуска доступны:
+- `GET /health`
+- `POST /chat/ask`
+- `GET /chat/history`
+- `DELETE /chat/cache`
+- Swagger UI: `http://127.0.0.1:8000/docs`
+
+Пример запроса:
+
+```json
+{
+  "question": "Какая форма итоговой государственной аттестации предусмотрена документом?",
+  "search_type": "vector"
+}
+```
+
+### 4. Оценка качества
+
+Быстрый прогон:
+
+```bash
+python evaluate.py --quick
+```
+
+Полный прогон:
+
 ```bash
 python evaluate.py
 ```
 
-Или передай путь к другому eval-набору:
+Свой eval-набор:
+
 ```bash
 python evaluate.py data/my_eval_questions.json
 ```
 
+Формат eval-файла:
+
+```json
+[
+  {
+    "question": "В каком семестре проводится итоговая аттестация?",
+    "ground_truth": "Итоговая государственная аттестация проводится в восьмом семестре."
+  }
+]
+```
+
 ## Архитектура
 
-### Индексация (один раз)
-```
+### Индексация
+
+```text
 PDF
-  └─> PyPDFLoader        # извлекаем текст постранично
-  └─> RecursiveCharacterTextSplitter  # режем на чанки ~500 символов
-  └─> multilingual-e5-large           # создаём эмбеддинги
-  └─> Qdrant                          # сохраняем векторы + текст
+  -> PyPDFLoader
+  -> RecursiveCharacterTextSplitter
+  -> multilingual-e5-large
+  -> Qdrant
 ```
 
-### Векторный поиск (каждый запрос)
-```
+### Векторный поиск
+
+```text
 Вопрос
-  └─> эмбеддинг запроса
-  └─> Qdrant similarity search
-  └─> топ-K чанков
-  └─> промпт = контекст + вопрос
-  └─> Ollama (llama3.2)
-  └─> ответ
+  -> embedding запроса
+  -> similarity search в Qdrant
+  -> top-k чанков
+  -> prompt + Ollama
+  -> ответ
 ```
 
-### Гибридный поиск (каждый запрос)
-```
+### Гибридный поиск
+
+```text
 Вопрос
-  └─> BM25 поиск (по ключевым словам)  ─┐
-  └─> векторный поиск (по смыслу)      ─┤ RRF объединение
-                                         └─> топ-K чанков
-                                         └─> промпт + Ollama
-                                         └─> ответ
+  -> BM25
+  -> vector search
+  -> RRF fusion
+  -> top-k чанков
+  -> prompt + Ollama
+  -> ответ
 ```
 
-## Метрики качества (RAGAS)
+## Метрики качества
 
-| Метрика | Описание |
-|---------|----------|
-| faithfulness | не галлюцинирует ли модель |
-| answer_relevancy | релевантен ли ответ вопросу |
-| context_recall | полно ли найден нужный контекст |
+- `faithfulness` — не галлюцинирует ли модель
+- `answer_relevancy` — релевантен ли ответ вопросу
+- `context_recall` — полно ли найден нужный контекст
 
 ## Конфигурация
 
-Все параметры в `config.py`:
+Основные настройки находятся в `config.py`:
+
 ```python
 OLLAMA_MODEL = "llama3.2:latest"
 EMBEDDING_MODEL = "intfloat/multilingual-e5-large"
