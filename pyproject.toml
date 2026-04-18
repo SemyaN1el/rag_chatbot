@@ -31,4 +31,4 @@ dependencies = [
 
 [tool.setuptools]
 py-modules = ["chat", "config", "evaluate", "hybrid_chat", "hybrid_search", "ingest"]
-packages = ["app", "app.routers", "app.services"]
+packages = ["app", "app.agent", "app.routers", "app.services"]
