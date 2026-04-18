@@ -44,5 +44,12 @@ class ToolRegistry:
         return sorted(self._tools.keys())
 
     def execute(self, call: ToolCall) -> ToolResult:
-        tool = self.get(call.tool_name)
-        return tool.handler(call)
+        try:
+            tool = self.get(call.tool_name)
+            return tool.handler(call)
+        except Exception as exc:
+            return ToolResult(
+                tool_name=call.tool_name,
+                success=False,
+                error=str(exc),
+            )

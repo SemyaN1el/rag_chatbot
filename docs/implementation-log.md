@@ -107,3 +107,38 @@
 
 - Следующий шаг: завернуть текущие retrieval/history/cache сценарии в реальный tool layer.
 - После этого можно добавлять `/agent/chat` и bounded workflow поверх новых контрактов.
+
+### [2026-04-19] История 2: tool layer поверх текущего RAG
+
+**Статус:** выполнено
+
+**Цель:** добавить реальный слой агентных инструментов над текущими retrieval/history/cache сервисами, чтобы runtime работал через `ToolCall` и `ToolResult`, а не через прямые вызовы сервисов.
+
+**Чеклист выполненного:**
+
+- [x] Добавлены factory-функции для агентных инструментов над retrieval, history и cache сценариями.
+- [x] Зарегистрированы инструменты `search_vector`, `search_hybrid`, `get_chat_history`, `get_cached_answer`, `set_cached_answer`.
+- [x] У каждого инструмента зафиксирован единый формат `output`.
+- [x] `ToolRegistry.execute()` переведён на структурированный `ToolResult` при ошибках выполнения.
+- [x] Добавлены unit-тесты на registry, registration, output shape и error handling.
+- [x] Обновлён срез проекта в `docs/current-results.md`.
+
+**Изменённые файлы:**
+
+- `app/agent/__init__.py`
+- `app/agent/tools.py`
+- `app/agent/service_tools.py`
+- `tests/test_agent_tools.py`
+- `docs/current-results.md`
+- `docs/implementation-log.md`
+
+**Проверка:**
+
+- Запустить unit-тесты на схемы, состояние и новый tool layer.
+- Проверить, что старые API-модули и `/chat/ask` не менялись.
+- Проверить, что зарегистрированный набор tools соответствует ожидаемому agent toolkit.
+
+**Известные follow-up пункты:**
+
+- Следующий шаг: подключить tool registry и новый bounded workflow в `/agent/chat`.
+- После этого можно добавлять guardrails v1 и трассировку шагов уже на реальном запросе.
