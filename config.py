@@ -55,6 +55,7 @@ POSTGRES_URL = _get_env("POSTGRES_URL", "postgresql+psycopg://raguser:ragpasswor
 REDIS_HOST = _get_env("REDIS_HOST", "localhost")
 REDIS_PORT = int(_get_env("REDIS_PORT", "6379"))
 REDIS_TTL = int(_get_env("REDIS_TTL", "3600"))  # время жизни кэша в секундах (1 час)
+SESSION_MEMORY_TTL = int(_get_env("SESSION_MEMORY_TTL", "14400"))  # время жизни памяти сессии в секундах (4 часа)
 
 # FastAPI
 API_HOST = _get_env("API_HOST", "0.0.0.0")

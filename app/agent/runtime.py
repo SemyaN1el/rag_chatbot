@@ -107,8 +107,7 @@ class AgentRuntime:
 
     def finalize_response(self, state: AgentState, response: AgentResponse) -> AgentState:
         state.complete(response)
-        if not response.trace:
-            response.trace = list(state.trace)
+        response.trace = list(state.trace)
         return state
 
     def fail(self, state: AgentState, error_message: str) -> AgentState:

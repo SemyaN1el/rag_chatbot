@@ -5,6 +5,11 @@ from time import perf_counter
 from uuid import uuid4
 
 from app.agent.guardrails import check_input_guardrails
+from app.agent.memory import (
+    build_memory_augmented_question,
+    should_apply_session_memory,
+    update_session_memory,
+)
 from app.agent.observability import log_agent_event
 from app.agent.runtime import AgentRuntime
 from app.agent.schemas import AgentChatRequest, AgentChatResponse, AgentCitation, AgentTraceStep
@@ -17,6 +22,23 @@ HistorySaver = Callable[[str, str, str], None]
 
 def _elapsed_ms(started_at: float) -> int:
     return max(int((perf_counter() - started_at) * 1000), 0)
+
+
+def _session_memory_stats(session_memory: dict | None) -> dict[str, int | bool]:
+    if not session_memory:
+        return {
+            "memory_found": False,
+            "recent_turn_count": 0,
+            "summary_present": False,
+        }
+
+    summary = str(session_memory.get("summary", "")).strip()
+    recent_turns = session_memory.get("recent_turns", [])
+    return {
+        "memory_found": True,
+        "recent_turn_count": len(recent_turns) if isinstance(recent_turns, list) else 0,
+        "summary_present": bool(summary),
+    }
 
 
 def _resolve_route(search_type: str) -> tuple[AgentRoutingDecision, str]:
@@ -141,6 +163,71 @@ def _build_refusal_response(
     )
 
 
+def _persist_session_memory(
+    *,
+    agent_runtime: AgentRuntime,
+    state,
+    session_id: str,
+    search_type: str,
+    original_question: str,
+    answer: str,
+    existing_memory: dict | None,
+) -> None:
+    updated_memory = update_session_memory(
+        existing_memory,
+        question=original_question,
+        answer=answer,
+        search_type=search_type,
+    )
+    session_memory_write_result = agent_runtime.execute_tool(
+        state,
+        "set_session_memory",
+        {
+            "session_id": session_id,
+            "memory": updated_memory,
+        },
+    )
+    if not session_memory_write_result.success:
+        state.add_trace_step(
+            AgentTraceStep(
+                kind="runtime",
+                status="skipped",
+                name="session_memory_update_failed_but_ignored",
+                detail=session_memory_write_result.error,
+            )
+        )
+        log_agent_event(
+            "session_memory_update_skipped",
+            request_id=state.request_id,
+            session_id=session_id,
+            search_type=search_type,
+            route=state.routing_decision.value,
+            status="failed",
+            metadata={"error": session_memory_write_result.error},
+        )
+        return
+
+    stats = _session_memory_stats(updated_memory)
+    state.add_trace_step(
+        AgentTraceStep(
+            kind="runtime",
+            status="completed",
+            name="session_memory_updated",
+            detail="Память сессии обновлена после успешного ответа.",
+            metadata=stats,
+        )
+    )
+    log_agent_event(
+        "session_memory_updated",
+        request_id=state.request_id,
+        session_id=session_id,
+        search_type=search_type,
+        route=state.routing_decision.value,
+        status="completed",
+        metadata=stats,
+    )
+
+
 def execute_agent_chat(
     request: AgentChatRequest,
     *,
@@ -226,12 +313,66 @@ def execute_agent_chat(
         routing_decision,
         selected_tool=search_tool,
     )
+    session_memory_result = agent_runtime.execute_tool(
+        state,
+        "get_session_memory",
+        {"session_id": session_id},
+    )
+    session_memory = (
+        session_memory_result.output.get("value")
+        if session_memory_result.success
+        else None
+    )
+    memory_stats = _session_memory_stats(session_memory)
+    state.add_trace_step(
+        AgentTraceStep(
+            kind="runtime",
+            status="completed" if session_memory_result.success else "failed",
+            name="session_memory_loaded",
+            detail=(
+                "Память сессии загружена."
+                if session_memory_result.success
+                else (session_memory_result.error or "Не удалось загрузить память сессии.")
+            ),
+            metadata=memory_stats,
+        )
+    )
+    log_agent_event(
+        "session_memory_loaded",
+        request_id=state.request_id,
+        session_id=state.session_id,
+        search_type=request.search_type,
+        route=routing_decision.value,
+        status="completed" if session_memory_result.success else "failed",
+        metadata=memory_stats,
+    )
+    search_question = request.question
+    if should_apply_session_memory(request.question, session_memory):
+        search_question = build_memory_augmented_question(request.question, session_memory or {})
+        state.add_trace_step(
+            AgentTraceStep(
+                kind="runtime",
+                status="completed",
+                name="session_memory_applied",
+                detail="Контекст предыдущих ходов добавлен к запросу поиска.",
+                metadata={"original_question_length": len(request.question.strip()), **memory_stats},
+            )
+        )
+        log_agent_event(
+            "session_memory_applied",
+            request_id=state.request_id,
+            session_id=state.session_id,
+            search_type=request.search_type,
+            route=routing_decision.value,
+            status="completed",
+            metadata={"augmented_question_length": len(search_question), **memory_stats},
+        )
 
     cache_lookup_started_at = perf_counter()
     cache_result = agent_runtime.execute_tool(
         state,
         "get_cached_answer",
-        {"question": request.question, "search_type": request.search_type},
+        {"question": search_question, "search_type": request.search_type},
     )
     cache_hit = cache_result.success and bool(cache_result.output.get("cache_hit"))
     log_agent_event(
@@ -307,6 +448,15 @@ def execute_agent_chat(
             )
             return response
         history_saver(request.question, response.answer, request.search_type)
+        _persist_session_memory(
+            agent_runtime=agent_runtime,
+            state=state,
+            session_id=state.session_id,
+            search_type=request.search_type,
+            original_question=request.question,
+            answer=response.answer,
+            existing_memory=session_memory,
+        )
         agent_runtime.finalize_response(state, response)
         log_agent_event(
             "request_completed",
@@ -325,7 +475,7 @@ def execute_agent_chat(
     search_result = agent_runtime.execute_tool(
         state,
         search_tool,
-        {"question": request.question},
+        {"question": search_question},
     )
     if not search_result.success:
         agent_runtime.fail(state, search_result.error or "Ошибка инструмента")
@@ -359,7 +509,7 @@ def execute_agent_chat(
         state,
         "set_cached_answer",
         {
-            "question": request.question,
+            "question": search_question,
             "search_type": request.search_type,
             "result": payload,
         },
@@ -445,6 +595,15 @@ def execute_agent_chat(
         )
         return response
     history_saver(request.question, response.answer, request.search_type)
+    _persist_session_memory(
+        agent_runtime=agent_runtime,
+        state=state,
+        session_id=state.session_id,
+        search_type=request.search_type,
+        original_question=request.question,
+        answer=response.answer,
+        existing_memory=session_memory,
+    )
     agent_runtime.finalize_response(state, response)
     log_agent_event(
         "request_completed",

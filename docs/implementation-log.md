@@ -332,3 +332,48 @@
 
 - Следующий шаг: выделить метрики latency/outcome в отдельный счётчик или backend наблюдаемости.
 - После этого логично идти в session memory, router intelligence или budget controls, уже опираясь на появившийся telemetry layer.
+
+### [2026-04-19] История 6: session memory и summaries
+
+**Статус:** выполнено
+
+**Цель:** превратить историю сессии из пассивного архива в рабочую память агента, чтобы follow-up вопросы могли использовать краткий контекст предыдущих ходов.
+
+**Чеклист выполненного:**
+
+- [x] Добавлен memory-слой `app/agent/memory.py` с summary builder, follow-up эвристикой и сборкой memory-augmented question.
+- [x] В Redis добавлено отдельное хранение session memory через `get_session_memory` и `set_session_memory`.
+- [x] Tool layer расширен инструментами `get_session_memory` и `set_session_memory`.
+- [x] `/agent/chat` теперь загружает память сессии до retrieval и при необходимости применяет её к поисковому запросу.
+- [x] После успешного ответа agent workflow обновляет summary и recent turns текущей сессии.
+- [x] Trace и structured logs дополнены шагами `session_memory_loaded`, `session_memory_applied`, `session_memory_updated`.
+- [x] Добавлены unit-тесты на memory helper-функции и API-тесты на follow-up/memory-update сценарии.
+- [x] Обновлены `.env.example` и текущий срез проекта.
+
+**Изменённые файлы:**
+
+- `config.py`
+- `.env.example`
+- `app/services/cache.py`
+- `app/agent/memory.py`
+- `app/agent/service_tools.py`
+- `app/agent/workflow.py`
+- `app/agent/runtime.py`
+- `app/agent/__init__.py`
+- `tests/test_agent_memory.py`
+- `tests/test_agent_router.py`
+- `tests/test_agent_tools.py`
+- `docs/current-results.md`
+- `docs/implementation-log.md`
+
+**Проверка:**
+
+- Запущено `python -m unittest discover -s tests -v`.
+- Проверено, что все тесты проходят: `31/31 OK`.
+- Проверено, что короткий follow-up вопрос использует summary и recent turns при вызове retrieval tool.
+- Проверено, что после успешного ответа session memory обновляется и попадает в trace.
+
+**Известные follow-up пункты:**
+
+- Следующий шаг: сделать router умнее и научить его выбирать direct answer / retrieve / clarify по содержанию вопроса, а не только по `search_type`.
+- Отдельно стоит решить, какая часть session memory должна сохраняться в PostgreSQL как более долговременная память пользователя, а не только жить в Redis.

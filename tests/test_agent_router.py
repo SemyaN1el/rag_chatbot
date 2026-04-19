@@ -14,6 +14,7 @@ from app.routers.agent import get_agent_runtime, get_history_saver, router
 def build_test_runtime(
     *,
     cache_value: dict | None = None,
+    session_memory_value: dict | None = None,
     fail_vector: bool = False,
     fail_hybrid: bool = False,
     vector_sources: list[dict] | None = None,
@@ -22,9 +23,13 @@ def build_test_runtime(
     hybrid_answer: str | None = None,
     calls: dict[str, int] | None = None,
     cached_writes: list[tuple[str, str, dict]] | None = None,
+    session_memory_writes: list[tuple[str, dict]] | None = None,
+    search_questions: list[tuple[str, str]] | None = None,
 ) -> AgentRuntime:
     call_counters = calls if calls is not None else {}
     cache_writes = cached_writes if cached_writes is not None else []
+    memory_writes = session_memory_writes if session_memory_writes is not None else []
+    captured_search_questions = search_questions if search_questions is not None else []
     registry = ToolRegistry()
 
     def register_tool(name: str, handler: Callable[[ToolCall], ToolResult]) -> None:
@@ -56,6 +61,7 @@ def build_test_runtime(
         if fail_vector:
             raise RuntimeError("Vector tool unavailable")
         question = call.arguments["question"]
+        captured_search_questions.append(("search_vector", question))
         return ToolResult(
             tool_name="search_vector",
             success=True,
@@ -73,6 +79,7 @@ def build_test_runtime(
         if fail_hybrid:
             raise RuntimeError("Hybrid tool unavailable")
         question = call.arguments["question"]
+        captured_search_questions.append(("search_hybrid", question))
         return ToolResult(
             tool_name="search_hybrid",
             success=True,
@@ -100,10 +107,38 @@ def build_test_runtime(
             output={"cached": True},
         )
 
+    def get_session_memory(call: ToolCall) -> ToolResult:
+        call_counters["get_session_memory"] = call_counters.get("get_session_memory", 0) + 1
+        return ToolResult(
+            tool_name="get_session_memory",
+            success=True,
+            output={
+                "session_id": call.arguments["session_id"],
+                "memory_found": session_memory_value is not None,
+                "value": session_memory_value,
+            },
+        )
+
+    def set_session_memory(call: ToolCall) -> ToolResult:
+        call_counters["set_session_memory"] = call_counters.get("set_session_memory", 0) + 1
+        memory_writes.append(
+            (
+                call.arguments["session_id"],
+                call.arguments["memory"],
+            )
+        )
+        return ToolResult(
+            tool_name="set_session_memory",
+            success=True,
+            output={"stored": True},
+        )
+
     register_tool("get_cached_answer", get_cached_answer)
+    register_tool("get_session_memory", get_session_memory)
     register_tool("search_vector", search_vector)
     register_tool("search_hybrid", search_hybrid)
     register_tool("set_cached_answer", set_cached_answer)
+    register_tool("set_session_memory", set_session_memory)
     return AgentRuntime(registry)
 
 
@@ -127,7 +162,11 @@ class AgentRouterTestCase(unittest.TestCase):
 
     def test_agent_chat_vector_success(self) -> None:
         cached_writes: list[tuple[str, str, dict]] = []
-        runtime = build_test_runtime(cached_writes=cached_writes)
+        session_memory_writes: list[tuple[str, dict]] = []
+        runtime = build_test_runtime(
+            cached_writes=cached_writes,
+            session_memory_writes=session_memory_writes,
+        )
         client = self.build_client(runtime)
 
         response = client.post(
@@ -153,6 +192,12 @@ class AgentRouterTestCase(unittest.TestCase):
         self.assertEqual(
             self.history_calls,
             [("Какая форма аттестации?", "vector:Какая форма аттестации?", "vector")],
+        )
+        self.assertEqual(session_memory_writes[0][0], "session-123")
+        self.assertEqual(session_memory_writes[0][1]["turn_count"], 1)
+        self.assertEqual(
+            session_memory_writes[0][1]["recent_turns"][0]["question"],
+            "Какая форма аттестации?",
         )
         self.assertEqual(
             cached_writes,
@@ -210,6 +255,7 @@ class AgentRouterTestCase(unittest.TestCase):
         self.assertEqual(payload["answer"], "cached answer")
         self.assertEqual(calls.get("search_vector", 0), 0)
         self.assertEqual(calls.get("get_cached_answer", 0), 1)
+        self.assertEqual(calls.get("set_session_memory", 0), 1)
 
     def test_agent_chat_returns_controlled_failure_when_search_tool_breaks(self) -> None:
         runtime = build_test_runtime(fail_vector=True)
@@ -341,6 +387,66 @@ class AgentRouterTestCase(unittest.TestCase):
         completed_event = next(event for event in log_events if event["event"] == "request_completed")
         self.assertEqual(completed_event["outcome"], "refusal")
         self.assertEqual(completed_event["refusal_reason"], "insufficient_context")
+
+    def test_agent_chat_applies_session_memory_to_followup_question(self) -> None:
+        search_questions: list[tuple[str, str]] = []
+        runtime = build_test_runtime(
+            session_memory_value={
+                "summary": "Q: Какая форма итоговой аттестации? | A: Экзамен",
+                "recent_turns": [
+                    {
+                        "question": "Какая форма итоговой аттестации?",
+                        "answer": "Экзамен",
+                        "search_type": "vector",
+                    }
+                ],
+                "turn_count": 1,
+            },
+            search_questions=search_questions,
+        )
+        client = self.build_client(runtime)
+
+        response = client.post(
+            "/agent/chat",
+            json={
+                "question": "А сроки какие?",
+                "search_type": "vector",
+                "session_id": "session-follow-up",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        executed_question = next(
+            question for tool_name, question in search_questions if tool_name == "search_vector"
+        )
+        self.assertIn("Краткий контекст сессии:", executed_question)
+        self.assertIn("Текущий вопрос: А сроки какие?", executed_question)
+        self.assertTrue(any(step["name"] == "session_memory_applied" for step in payload["trace"]))
+
+    def test_agent_chat_updates_session_memory_after_success(self) -> None:
+        session_memory_writes: list[tuple[str, dict]] = []
+        runtime = build_test_runtime(session_memory_writes=session_memory_writes)
+        client = self.build_client(runtime)
+
+        response = client.post(
+            "/agent/chat",
+            json={
+                "question": "Что сказано про практику?",
+                "search_type": "vector",
+                "session_id": "session-memory-write",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(session_memory_writes[0][0], "session-memory-write")
+        self.assertEqual(
+            session_memory_writes[0][1]["recent_turns"][0]["answer"],
+            "vector:Что сказано про практику?",
+        )
+        self.assertTrue(session_memory_writes[0][1]["summary"])
+        self.assertTrue(any(step["name"] == "session_memory_updated" for step in payload["trace"]))
 
 
 if __name__ == "__main__":

@@ -87,6 +87,7 @@ class ServiceToolsTestCase(unittest.TestCase):
             "search_type": "vector",
         }
         captured_cache_write: list[tuple[str, str, dict]] = []
+        captured_memory_write: list[tuple[str, dict]] = []
 
         registry = register_default_tools(
             vector_search_handler=lambda question: {
@@ -104,6 +105,14 @@ class ServiceToolsTestCase(unittest.TestCase):
             cache_writer=lambda question, search_type, result: captured_cache_write.append(
                 (question, search_type, result)
             ),
+            session_memory_reader=lambda session_id: {
+                "summary": "Q: Вопрос | A: Ответ",
+                "recent_turns": [{"question": "Вопрос", "answer": "Ответ", "search_type": "vector"}],
+                "turn_count": 1,
+            } if session_id == "session-1" else None,
+            session_memory_writer=lambda session_id, memory: captured_memory_write.append(
+                (session_id, memory)
+            ),
         )
 
         self.assertEqual(
@@ -111,9 +120,11 @@ class ServiceToolsTestCase(unittest.TestCase):
             [
                 "get_cached_answer",
                 "get_chat_history",
+                "get_session_memory",
                 "search_hybrid",
                 "search_vector",
                 "set_cached_answer",
+                "set_session_memory",
             ],
         )
 
@@ -142,6 +153,18 @@ class ServiceToolsTestCase(unittest.TestCase):
                 },
             )
         )
+        memory_get_result = registry.execute(
+            ToolCall(tool_name="get_session_memory", arguments={"session_id": "session-1"})
+        )
+        memory_set_result = registry.execute(
+            ToolCall(
+                tool_name="set_session_memory",
+                arguments={
+                    "session_id": "session-1",
+                    "memory": {"summary": "Новое summary", "recent_turns": [], "turn_count": 0},
+                },
+            )
+        )
 
         self.assertTrue(vector_result.success)
         self.assertEqual(vector_result.output["search_type"], "vector")
@@ -159,9 +182,18 @@ class ServiceToolsTestCase(unittest.TestCase):
 
         self.assertTrue(cache_set_result.success)
         self.assertTrue(cache_set_result.output["cached"])
+        self.assertTrue(memory_get_result.success)
+        self.assertTrue(memory_get_result.output["memory_found"])
+        self.assertEqual(memory_get_result.output["value"]["turn_count"], 1)
+        self.assertTrue(memory_set_result.success)
+        self.assertTrue(memory_set_result.output["stored"])
         self.assertEqual(
             captured_cache_write,
             [("Вопрос", "vector", {"answer": "Новый ответ", "sources": []})],
+        )
+        self.assertEqual(
+            captured_memory_write,
+            [("session-1", {"summary": "Новое summary", "recent_turns": [], "turn_count": 0})],
         )
 
     def test_search_tool_reports_argument_error(self) -> None:
@@ -179,6 +211,8 @@ class ServiceToolsTestCase(unittest.TestCase):
             history_handler=lambda limit: [],
             cache_reader=lambda question, search_type: None,
             cache_writer=lambda question, search_type, result: None,
+            session_memory_reader=lambda session_id: None,
+            session_memory_writer=lambda session_id, memory: None,
         )
 
         result = registry.execute(

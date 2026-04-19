@@ -13,14 +13,14 @@
 2. Чанки и эмбеддинги сохраняются в Qdrant.
 3. Вопрос пользователя проходит через `vector` или `hybrid` retrieval.
 4. LLM через Groq API отвечает только по найденному контексту.
-5. История сохраняется в PostgreSQL, повторные запросы кэшируются в Redis.
+5. История сохраняется в PostgreSQL, а в Redis живут answer-cache и session memory.
 
 Инфраструктурная база уже есть:
 
 - API на FastAPI;
 - Qdrant для retrieval;
 - PostgreSQL для истории;
-- Redis для кэша;
+- Redis для кэша и краткой памяти сессии;
 - eval-скрипт на RAGAS;
 - Docker Compose для локального запуска сервисов.
 
@@ -41,6 +41,7 @@
 - `DELETE /chat/cache` для очистки Redis-кэша.
 - Сохранение истории запросов и ответов в PostgreSQL.
 - TTL-кэширование одинаковых вопросов в Redis.
+- Краткая память сессии и summary в Redis для `/agent/chat`.
 
 ### Оценка качества
 
@@ -68,7 +69,7 @@
 ### Tool layer для agent runtime
 
 - Добавлены адаптеры, которые превращают текущие RAG/history/cache сценарии в agent-compatible tools.
-- Зарегистрированы инструменты `search_vector`, `search_hybrid`, `get_chat_history`, `get_cached_answer`, `set_cached_answer`.
+- Зарегистрированы инструменты `search_vector`, `search_hybrid`, `get_chat_history`, `get_cached_answer`, `set_cached_answer`, `get_session_memory`, `set_session_memory`.
 - `ToolRegistry.execute()` теперь возвращает структурированный `ToolResult` даже при ошибках инструмента.
 - Для tool layer добавлены отдельные unit-тесты на регистрацию, успешные вызовы и обработку ошибок.
 
@@ -96,6 +97,14 @@
 - Tool steps в trace теперь содержат `duration_ms`, что даёт минимальную latency-наблюдаемость по шагам agent workflow.
 - Добавлены тесты, которые проверяют и структуру логов, и наличие событий успеха/отказа.
 
+### Session memory и summaries v1
+
+- Добавлен отдельный memory-слой `app/agent/memory.py` для краткой памяти сессии и follow-up эвристик.
+- В Redis теперь хранится session memory с summary и последними ходами через отдельные tools `get_session_memory` и `set_session_memory`.
+- `/agent/chat` загружает память сессии до retrieval и при коротких/связанных вопросах обогащает поисковый запрос summary и последними turns.
+- После успешного ответа агент обновляет session summary и recent turns, чтобы следующие вопросы опирались на контекст сессии.
+- Добавлены unit- и API-тесты на follow-up сценарии, обновление памяти и включение memory-шагов в trace.
+
 ## Текущие ограничения
 
 ### Архитектурные
@@ -115,8 +124,9 @@
 
 ### Memory и safety
 
-- Текущая "память" ограничена историей чата и кэшем, но не оформлена как short-term, long-term и context memory.
-- Нет entity memory, session memory summary и политики записи фактов о пользователе.
+- Появилась базовая session memory в Redis с кратким summary и recent turns для текущей сессии.
+- История в PostgreSQL по-прежнему хранится отдельно и ещё не объединена с session memory в общий memory pipeline.
+- Нет entity memory, долгосрочной пользовательской памяти и политики записи фактов о пользователе.
 - Есть базовые input/output guardrails, но пока только первого уровня.
 - Есть начальная защита от простых prompt injection и jailbreak-паттернов.
 - Есть базовая проверка на отсутствие подтверждающего контекста и citations.
@@ -181,6 +191,12 @@
 - Redis использовать как short-term/session state;
 - PostgreSQL использовать для истории, summary и long-term facts;
 - Qdrant оставить как document memory, а не как пользовательскую долгосрочную память.
+
+Что уже появилось в коде:
+
+- Redis теперь используется не только для answer-cache, но и для краткой памяти сессии;
+- agent workflow умеет загружать summary/recent turns и применять их к follow-up вопросам;
+- после успешных ответов summary сессии автоматически обновляется.
 
 ### Guardrails
 
@@ -247,8 +263,8 @@
 
 ### Этап 3. Memory и guardrails
 
-- Разделить память на short-term, long-term и context layers.
-- Добавить session summaries и политику записи фактов.
+- Развить уже добавленную session memory до полного short-term/context memory pipeline.
+- Добавить более осмысленные session summaries и политику записи фактов.
 - Реализовать input/output guardrails.
 - Ввести allowlist tools, schema validation и action limiters.
 

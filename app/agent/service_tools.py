@@ -10,6 +10,8 @@ SearchHandler = Callable[[str], dict[str, Any]]
 HistoryHandler = Callable[[int], list[dict[str, Any]]]
 CacheReader = Callable[[str, str], dict[str, Any] | None]
 CacheWriter = Callable[[str, str, dict[str, Any]], None]
+SessionMemoryReader = Callable[[str], dict[str, Any] | None]
+SessionMemoryWriter = Callable[[str, dict[str, Any]], None]
 
 
 def _require_string_argument(call: ToolCall, name: str) -> str:
@@ -152,6 +154,54 @@ def create_set_cached_answer_tool(
     )
 
 
+def create_get_session_memory_tool(
+    session_memory_reader: SessionMemoryReader,
+) -> RegisteredTool:
+    def handler(call: ToolCall) -> ToolResult:
+        session_id = _require_string_argument(call, "session_id")
+        memory = session_memory_reader(session_id)
+
+        return ToolResult(
+            tool_name="get_session_memory",
+            success=True,
+            output={
+                "session_id": session_id,
+                "memory_found": memory is not None,
+                "value": memory,
+            },
+        )
+
+    return RegisteredTool(
+        name="get_session_memory",
+        description="Читает краткую память текущей сессии из Redis.",
+        handler=handler,
+    )
+
+
+def create_set_session_memory_tool(
+    session_memory_writer: SessionMemoryWriter,
+) -> RegisteredTool:
+    def handler(call: ToolCall) -> ToolResult:
+        session_id = _require_string_argument(call, "session_id")
+        memory = _require_dict_argument(call, "memory")
+        session_memory_writer(session_id, memory)
+
+        return ToolResult(
+            tool_name="set_session_memory",
+            success=True,
+            output={
+                "session_id": session_id,
+                "stored": True,
+            },
+        )
+
+    return RegisteredTool(
+        name="set_session_memory",
+        description="Сохраняет обновлённую память текущей сессии в Redis.",
+        handler=handler,
+    )
+
+
 def register_default_tools(
     registry: ToolRegistry | None = None,
     *,
@@ -160,6 +210,8 @@ def register_default_tools(
     history_handler: HistoryHandler | None = None,
     cache_reader: CacheReader | None = None,
     cache_writer: CacheWriter | None = None,
+    session_memory_reader: SessionMemoryReader | None = None,
+    session_memory_writer: SessionMemoryWriter | None = None,
 ) -> ToolRegistry:
     if vector_search_handler is None or hybrid_search_handler is None:
         from app.services.rag import ask_hybrid, ask_vector
@@ -177,6 +229,11 @@ def register_default_tools(
 
         cache_reader = cache_reader or get_cached
         cache_writer = cache_writer or set_cached
+    if session_memory_reader is None or session_memory_writer is None:
+        from app.services.cache import get_session_memory, set_session_memory
+
+        session_memory_reader = session_memory_reader or get_session_memory
+        session_memory_writer = session_memory_writer or set_session_memory
 
     tool_registry = registry or ToolRegistry()
     tool_registry.register(
@@ -197,5 +254,7 @@ def register_default_tools(
     )
     tool_registry.register(create_get_chat_history_tool(history_handler))
     tool_registry.register(create_get_cached_answer_tool(cache_reader))
+    tool_registry.register(create_get_session_memory_tool(session_memory_reader))
     tool_registry.register(create_set_cached_answer_tool(cache_writer))
+    tool_registry.register(create_set_session_memory_tool(session_memory_writer))
     return tool_registry
