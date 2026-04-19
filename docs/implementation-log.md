@@ -420,3 +420,99 @@
 
 - Следующий шаг: добавить budget controls и policy checks на уровне agent runtime.
 - После этого можно переходить к agent-eval сценарию с проверкой correctness не только ответа, но и route/tool choice.
+
+### [2026-04-19] Обновление backlog после Истории 7
+
+**Статус:** выполнено
+
+**Цель:** зафиксировать в документации ближайшие продуктовые истории после внедрения умного router-а.
+
+**Чеклист выполненного:**
+
+- [x] В `docs/current-results.md` добавлен блок `Ближайшие истории`.
+- [x] Зафиксированы следующие шаги: `История 8`–`История 12`.
+- [x] Для каждой ближайшей истории добавлены краткие инженерные цели.
+
+**Изменённые файлы:**
+
+- `docs/current-results.md`
+- `docs/implementation-log.md`
+
+**Проверка:**
+
+- Проверить, что в `docs/current-results.md` появился раздел `Ближайшие истории`.
+- Проверить, что список следующих историй соответствует текущему состоянию проекта после `Истории 7`.
+
+**Известные follow-up пункты:**
+
+- Следующий рабочий шаг по коду: `История 8: budget controls и policy checks`.
+
+### [2026-04-19] Уточнение Истории 9 по метрикам
+
+**Статус:** выполнено
+
+**Цель:** уточнить backlog так, чтобы `История 9` включала не только eval harness, но и полноценные агентные метрики, а не только исходные RAG-метрики.
+
+**Чеклист выполненного:**
+
+- [x] В `docs/current-results.md` расширено описание `Истории 9`.
+- [x] Добавлено требование к нормальным агентным метрикам.
+- [x] Зафиксирован минимальный набор метрик для будущей реализации.
+
+**Изменённые файлы:**
+
+- `docs/current-results.md`
+- `docs/implementation-log.md`
+
+**Проверка:**
+
+- Проверить, что `История 9` теперь включает и eval harness, и набор агентных метрик.
+- Проверить, что список метрик не сводится только к старым RAG-метрикам из исходного кода.
+
+**Известные follow-up пункты:**
+
+- При реализации `Истории 9` использовать agent-level метрики как основной слой оценки, а RAG-метрики оставить вспомогательными.
+
+### [2026-04-19] История 8: budget controls и policy checks
+
+**Статус:** выполнено
+
+**Цель:** ограничить агентный runtime по числу шагов, числу tool call-ов и времени выполнения, добавить policy-checks до исполнения инструмента и ввести controlled degradation для необязательных side-effect шагов.
+
+**Чеклист выполненного:**
+
+- [x] Добавлен модуль `app/agent/budget.py` с конфигурируемыми runtime-лимитами и отдельным budget-exception типом.
+- [x] Добавлен модуль `app/agent/policy.py` с route-aware allowlist tools и проверками на допустимость side-effect операций.
+- [x] `AgentRuntime` переведён на централизованные preflight-проверки бюджета и policy перед tool execution.
+- [x] При превышении бюджета или policy-нарушении workflow теперь отдаёт контролируемый refusal с понятной причиной.
+- [x] Для необязательных шагов `set_cached_answer` и `set_session_memory` добавлен мягкий skip-path через `optional_tool_skipped`.
+- [x] Новые budget-лимиты вынесены в `.env.example`.
+- [x] Добавлены API-тесты на `max_steps`, `max_tool_calls`, timeout, policy deny и controlled degradation.
+- [x] Обновлён текущий срез проекта в `docs/current-results.md`.
+
+**Изменённые файлы:**
+
+- `app/agent/budget.py`
+- `app/agent/policy.py`
+- `app/agent/runtime.py`
+- `app/agent/state.py`
+- `app/agent/workflow.py`
+- `app/agent/__init__.py`
+- `config.py`
+- `.env.example`
+- `tests/test_agent_router.py`
+- `docs/current-results.md`
+- `docs/implementation-log.md`
+
+**Проверка:**
+
+- Запущено `python -m unittest discover -s tests -v`.
+- Проверено, что все тесты проходят: `44/44 OK`.
+- Проверено, что превышение `max_steps`, `max_tool_calls` и `workflow timeout` приводит к controlled refusal, а не к падению endpoint-а.
+- Проверено, что policy deny блокирует tool execution до вызова handler-а.
+- Проверено, что поздний необязательный side-effect шаг может быть пропущен по бюджету без потери успешного ответа пользователю.
+
+**Известные follow-up пункты:**
+
+- Следующий шаг: `История 9` с eval harness и агентными метриками на route/tool choice.
+- После этого стоит вынести route/outcome/budget counters в отдельный metrics layer, а policy — постепенно усилить до richer output checks и audit-правил.

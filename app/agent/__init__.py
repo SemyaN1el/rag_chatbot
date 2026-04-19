@@ -1,3 +1,4 @@
+from app.agent.budget import AgentBudget, AgentBudgetExceededError
 from app.agent.guardrails import check_input_guardrails
 from app.agent.memory import (
     build_memory_augmented_question,
@@ -6,6 +7,7 @@ from app.agent.memory import (
     update_session_memory,
 )
 from app.agent.observability import get_agent_logger, log_agent_event
+from app.agent.policy import AgentPolicyViolationError, AgentToolPolicy
 from app.agent.router import AgentRoute, resolve_agent_route
 from app.agent.runtime import AgentRuntime
 from app.agent.schemas import (
@@ -35,6 +37,10 @@ __all__ = [
     "AgentChatRequest",
     "AgentChatResponse",
     "AgentCitation",
+    "AgentBudget",
+    "AgentBudgetExceededError",
+    "AgentToolPolicy",
+    "AgentPolicyViolationError",
     "AgentResponse",
     "AgentRoute",
     "AgentRuntime",

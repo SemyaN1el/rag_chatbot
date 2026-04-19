@@ -113,6 +113,16 @@
 - Причина выбора маршрута теперь попадает в `trace` и structured logs через `routing_decision_applied`.
 - Добавлены unit-тесты на routing logic и API-тесты на direct answer, clarify, refuse и override из `vector` в `hybrid`.
 
+### Budget controls и policy checks v1
+
+- Добавлены отдельные модули `app/agent/budget.py` и `app/agent/policy.py`.
+- `AgentRuntime` теперь поддерживает конфигурируемые лимиты `max_steps`, `max_tool_calls`, `max_runtime_seconds`.
+- Лимиты вынесены в `.env` через `AGENT_MAX_STEPS`, `AGENT_MAX_TOOL_CALLS`, `AGENT_MAX_RUNTIME_SECONDS`.
+- Перед каждым tool call теперь выполняются явные preflight-проверки бюджета и policy.
+- Нарушение budget или policy больше не приводит к аварийному падению workflow, а переводит запрос в контролируемый refusal с понятной причиной в `trace` и логах.
+- Неприоритетные side-effect шаги вроде `set_session_memory` теперь умеют мягко пропускаться через `optional_tool_skipped`, если бюджет почти исчерпан.
+- Добавлены API-тесты на `max_steps`, `max_tool_calls`, timeout, policy deny и controlled degradation.
+
 ## Текущие ограничения
 
 ### Архитектурные
@@ -138,14 +148,17 @@
 - Есть базовые input/output guardrails, но пока только первого уровня.
 - Есть начальная защита от простых prompt injection и jailbreak-паттернов.
 - Есть базовая проверка на отсутствие подтверждающего контекста и citations.
-- Нет полноценного policy layer для scope checks, tool permissions и более сильных output validators.
+- Появился базовый policy layer для allowlist tools, route-aware tool permissions и write-after-context правил.
+- При этом всё ещё нет более сильного output policy layer-а, PII-protection и доменно-специфичных safety-политик.
 
 ### Production readiness
 
 - Часть LLM-конфига уже вынесена в `.env`, но у инфраструктурных настроек всё ещё есть захардкоженные fallback-значения.
 - Внутри agent workflow появился базовый structured logging и request-level tracing по шагам.
+- В runtime появились базовые budget controls по шагам, tool calls и общему времени выполнения запроса.
+- Policy layer теперь умеет блокировать неразрешённые tool calls до фактического исполнения.
 - При этом пока нет единой observability-схемы для всего приложения, отдельных метрик, alerting и внешнего trace backend-а.
-- Нет alerting, request budget control, step limits и policy enforcement.
+- Нет alerting, adaptive budgets, cost monitoring и внешнего enforcement/backend-а для политик.
 - Нет CI-ориентированной проверки агентного поведения.
 
 ## Рекомендации по агентной архитектуре
@@ -289,6 +302,36 @@
 - Query transformations и reranking.
 - Reflection/evaluator step с bounded retry.
 - Только после этого — обсуждение multi-agent или MCP-native интеграций.
+
+## Ближайшие истории
+
+История 8 закрыта: в runtime появились budget controls, policy checks и controlled degradation.
+
+### История 9. Agent eval harness
+
+- Оценивать не только ответ, но и `route/tool choice`.
+- Добавить regression-набор для `direct_answer`, `clarify`, `refuse`, `retrieve_vector`, `retrieve_hybrid`.
+- Зафиксировать pass/fail критерии для agent behavior.
+- Добавить нормальные агентные метрики вместо исходного упора только на базовые RAG-метрики.
+- Включить как минимум: `route accuracy`, `tool selection accuracy`, `refusal quality`, `citation validity`, `groundedness`, `task success rate`, `latency`, `cost per request`, `cache hit rate`.
+
+### История 10. Context builder и memory policy
+
+- Выделить отдельный слой сборки контекста.
+- Определить, что писать в session memory, а что не писать.
+- Развести `short-term memory` и просто хранение последних ходов.
+
+### История 11. Stronger output validation
+
+- Усилить groundedness-checks и проверки citations.
+- Сделать более строгую fail-closed валидацию ответа.
+- Нормализовать формат подтверждений и причин отказа.
+
+### История 12. Production observability v2
+
+- Добавить route/outcome counters и latency breakdown.
+- Ввести error taxonomy для agent runtime.
+- Подготовить слой под внешний monitoring backend.
 
 ## Рабочие договорённости на будущее
 

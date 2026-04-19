@@ -4,6 +4,7 @@ from collections.abc import Callable
 from time import perf_counter
 from uuid import uuid4
 
+from app.agent.budget import AgentBudgetExceededError
 from app.agent.guardrails import check_input_guardrails
 from app.agent.memory import (
     build_memory_augmented_question,
@@ -11,6 +12,7 @@ from app.agent.memory import (
     update_session_memory,
 )
 from app.agent.observability import log_agent_event
+from app.agent.policy import AgentPolicyViolationError
 from app.agent.router import resolve_agent_route
 from app.agent.runtime import AgentRuntime
 from app.agent.schemas import AgentChatRequest, AgentChatResponse, AgentCitation, AgentTraceStep
@@ -190,6 +192,23 @@ def _build_direct_answer_response(
     )
 
 
+def _build_controlled_stop_answer(refusal_reason: str) -> str:
+    if refusal_reason == "budget_max_steps_exceeded":
+        return "Агент остановил обработку запроса, потому что превысил допустимое число шагов."
+    if refusal_reason == "budget_max_tool_calls_exceeded":
+        return "Агент остановил обработку запроса, потому что превысил допустимое число вызовов инструментов."
+    if refusal_reason == "workflow_timeout_exceeded":
+        return "Агент остановил обработку запроса, потому что превысил допустимое время выполнения."
+    if refusal_reason in {
+        "tool_blocked_by_policy",
+        "tool_not_allowed_for_route",
+        "tool_write_requires_search_result",
+        "tool_write_requires_answer_context",
+    }:
+        return "Запрошенное действие заблокировано policy-слоем agent runtime."
+    return "Агент остановил обработку запроса из-за ограничения runtime-политик."
+
+
 def _persist_session_memory(
     *,
     agent_runtime: AgentRuntime,
@@ -213,36 +232,40 @@ def _persist_session_memory(
             "session_id": session_id,
             "memory": updated_memory,
         },
+        optional=True,
     )
     if not session_memory_write_result.success:
-        state.add_trace_step(
-            AgentTraceStep(
-                kind="runtime",
-                status="skipped",
-                name="session_memory_update_failed_but_ignored",
-                detail=session_memory_write_result.error,
+        if not session_memory_write_result.output.get("skipped"):
+            agent_runtime.record_step(
+                state,
+                AgentTraceStep(
+                    kind="runtime",
+                    status="skipped",
+                    name="session_memory_update_failed_but_ignored",
+                    detail=session_memory_write_result.error,
+                ),
             )
-        )
-        log_agent_event(
-            "session_memory_update_skipped",
-            request_id=state.request_id,
-            session_id=session_id,
-            search_type=search_type,
-            route=state.routing_decision.value,
-            status="failed",
-            metadata={"error": session_memory_write_result.error},
-        )
+            log_agent_event(
+                "session_memory_update_skipped",
+                request_id=state.request_id,
+                session_id=session_id,
+                search_type=search_type,
+                route=state.routing_decision.value,
+                status="failed",
+                metadata={"error": session_memory_write_result.error},
+            )
         return
 
     stats = _session_memory_stats(updated_memory)
-    state.add_trace_step(
+    agent_runtime.record_step(
+        state,
         AgentTraceStep(
             kind="runtime",
             status="completed",
             name="session_memory_updated",
             detail="Память сессии обновлена после успешного ответа.",
             metadata=stats,
-        )
+        ),
     )
     log_agent_event(
         "session_memory_updated",
@@ -285,216 +308,373 @@ def execute_agent_chat(
         status="running",
         metadata={"question_length": len(request.question.strip())},
     )
-    state.add_trace_step(
-        AgentTraceStep(
-            kind="input",
-            status="completed",
-            name="input_validated",
-            detail="Входной запрос прошёл базовую валидацию.",
+    try:
+        agent_runtime.record_step(
+            state,
+            AgentTraceStep(
+                kind="input",
+                status="completed",
+                name="input_validated",
+                detail="Входной запрос прошёл базовую валидацию.",
+            ),
         )
-    )
-    input_allowed, guard_reason, guard_message = check_input_guardrails(request.question)
-    state.add_trace_step(
-        AgentTraceStep(
-            kind="validation",
-            status="completed" if input_allowed else "failed",
-            name="input_guardrails_checked",
-            detail=guard_message,
+        input_allowed, guard_reason, guard_message = check_input_guardrails(request.question)
+        agent_runtime.record_step(
+            state,
+            AgentTraceStep(
+                kind="validation",
+                status="completed" if input_allowed else "failed",
+                name="input_guardrails_checked",
+                detail=guard_message,
+            ),
         )
-    )
-    log_agent_event(
-        "input_guardrails_checked",
-        request_id=state.request_id,
-        session_id=state.session_id,
-        search_type=request.search_type,
-        status="completed" if input_allowed else "failed",
-        refusal_reason=guard_reason if not input_allowed else None,
-    )
-    if not input_allowed:
-        response = _build_refusal_response(
-            request_id=state.request_id,
-            session_id=state.session_id,
-            response_search_type=request.search_type,
-            refusal_reason=guard_reason or "unsafe_input",
-            answer="Запрос отклонён политикой безопасности агента.",
-            trace=list(state.trace),
-        )
-        agent_runtime.finalize_response(state, response)
         log_agent_event(
-            "request_completed",
+            "input_guardrails_checked",
             request_id=state.request_id,
             session_id=state.session_id,
             search_type=request.search_type,
-            outcome="refusal",
-            refusal_reason=response.refusal_reason,
-            cached=response.cached,
-            confidence=response.confidence,
-            duration_ms=_elapsed_ms(workflow_started_at),
-            metadata={"trace_steps": len(response.trace)},
+            status="completed" if input_allowed else "failed",
+            refusal_reason=guard_reason if not input_allowed else None,
         )
-        return response
-
-    session_memory_result = agent_runtime.execute_tool(
-        state,
-        "get_session_memory",
-        {"session_id": session_id},
-    )
-    session_memory = (
-        session_memory_result.output.get("value")
-        if session_memory_result.success
-        else None
-    )
-    memory_stats = _session_memory_stats(session_memory)
-    state.add_trace_step(
-        AgentTraceStep(
-            kind="runtime",
-            status="completed" if session_memory_result.success else "failed",
-            name="session_memory_loaded",
-            detail=(
-                "Память сессии загружена."
-                if session_memory_result.success
-                else (session_memory_result.error or "Не удалось загрузить память сессии.")
-            ),
-            metadata=memory_stats,
-        )
-    )
-    log_agent_event(
-        "session_memory_loaded",
-        request_id=state.request_id,
-        session_id=state.session_id,
-        search_type=request.search_type,
-        status="completed" if session_memory_result.success else "failed",
-        metadata=memory_stats,
-    )
-    route = resolve_agent_route(request, session_memory=session_memory)
-    routing_decision = route.decision
-    effective_search_type = _resolve_effective_search_type(request, routing_decision)
-    agent_runtime.apply_routing_decision(
-        state,
-        routing_decision,
-        selected_tool=route.selected_tool,
-        detail=route.reason,
-        metadata=route.metadata or {},
-    )
-    if routing_decision == AgentRoutingDecision.DIRECT_ANSWER:
-        state.add_trace_step(
-            AgentTraceStep(
-                kind="generation",
-                status="completed",
-                name="direct_answer_returned",
-                detail=route.reason,
+        if not input_allowed:
+            response = _build_refusal_response(
+                request_id=state.request_id,
+                session_id=state.session_id,
+                response_search_type=request.search_type,
+                refusal_reason=guard_reason or "unsafe_input",
+                answer="Запрос отклонён политикой безопасности агента.",
+                trace=list(state.trace),
             )
-        )
-        response = _build_direct_answer_response(
-            request=request,
-            request_id=state.request_id,
-            session_id=state.session_id,
-            answer=route.answer or "Я готов помочь по документу.",
-            trace=list(state.trace),
-        )
-        agent_runtime.finalize_response(state, response)
-        log_agent_event(
-            "request_completed",
-            request_id=state.request_id,
-            session_id=state.session_id,
-            search_type=response.search_type,
-            route=routing_decision.value,
-            outcome="direct_answer",
-            cached=response.cached,
-            confidence=response.confidence,
-            duration_ms=_elapsed_ms(workflow_started_at),
-            metadata={"trace_steps": len(response.trace)},
-        )
-        return response
+            agent_runtime.finalize_response(state, response)
+            log_agent_event(
+                "request_completed",
+                request_id=state.request_id,
+                session_id=state.session_id,
+                search_type=request.search_type,
+                outcome="refusal",
+                refusal_reason=response.refusal_reason,
+                cached=response.cached,
+                confidence=response.confidence,
+                duration_ms=_elapsed_ms(workflow_started_at),
+                metadata={"trace_steps": len(response.trace)},
+            )
+            return response
 
-    if routing_decision in {AgentRoutingDecision.CLARIFY, AgentRoutingDecision.REFUSE}:
-        response = _build_refusal_response(
-            request_id=state.request_id,
-            session_id=state.session_id,
-            response_search_type=effective_search_type,
-            refusal_reason=route.refusal_reason or "needs_clarification",
-            answer=route.answer or "Нужны дополнительные уточнения по вопросу.",
-            trace=list(state.trace),
+        session_memory_result = agent_runtime.execute_tool(
+            state,
+            "get_session_memory",
+            {"session_id": session_id},
         )
-        agent_runtime.finalize_response(state, response)
-        log_agent_event(
-            "request_completed",
-            request_id=state.request_id,
-            session_id=state.session_id,
-            search_type=response.search_type,
-            route=routing_decision.value,
-            outcome="refusal",
-            refusal_reason=response.refusal_reason,
-            cached=response.cached,
-            confidence=response.confidence,
-            duration_ms=_elapsed_ms(workflow_started_at),
-            metadata={"trace_steps": len(response.trace)},
+        session_memory = (
+            session_memory_result.output.get("value")
+            if session_memory_result.success
+            else None
         )
-        return response
-
-    search_tool = route.selected_tool or (
-        "search_hybrid" if routing_decision == AgentRoutingDecision.RETRIEVE_HYBRID else "search_vector"
-    )
-    search_question = request.question
-    if should_apply_session_memory(request.question, session_memory):
-        search_question = build_memory_augmented_question(request.question, session_memory or {})
-        state.add_trace_step(
+        memory_stats = _session_memory_stats(session_memory)
+        agent_runtime.record_step(
+            state,
             AgentTraceStep(
                 kind="runtime",
-                status="completed",
-                name="session_memory_applied",
-                detail="Контекст предыдущих ходов добавлен к запросу поиска.",
-                metadata={"original_question_length": len(request.question.strip()), **memory_stats},
-            )
+                status="completed" if session_memory_result.success else "failed",
+                name="session_memory_loaded",
+                detail=(
+                    "Память сессии загружена."
+                    if session_memory_result.success
+                    else (session_memory_result.error or "Не удалось загрузить память сессии.")
+                ),
+                metadata=memory_stats,
+            ),
         )
         log_agent_event(
-            "session_memory_applied",
+            "session_memory_loaded",
+            request_id=state.request_id,
+            session_id=state.session_id,
+            search_type=request.search_type,
+            status="completed" if session_memory_result.success else "failed",
+            metadata=memory_stats,
+        )
+        route = resolve_agent_route(request, session_memory=session_memory)
+        routing_decision = route.decision
+        effective_search_type = _resolve_effective_search_type(request, routing_decision)
+        agent_runtime.apply_routing_decision(
+            state,
+            routing_decision,
+            selected_tool=route.selected_tool,
+            detail=route.reason,
+            metadata=route.metadata or {},
+        )
+        if routing_decision == AgentRoutingDecision.DIRECT_ANSWER:
+            agent_runtime.record_step(
+                state,
+                AgentTraceStep(
+                    kind="generation",
+                    status="completed",
+                    name="direct_answer_returned",
+                    detail=route.reason,
+                ),
+            )
+            response = _build_direct_answer_response(
+                request=request,
+                request_id=state.request_id,
+                session_id=state.session_id,
+                answer=route.answer or "Я готов помочь по документу.",
+                trace=list(state.trace),
+            )
+            agent_runtime.finalize_response(state, response)
+            log_agent_event(
+                "request_completed",
+                request_id=state.request_id,
+                session_id=state.session_id,
+                search_type=response.search_type,
+                route=routing_decision.value,
+                outcome="direct_answer",
+                cached=response.cached,
+                confidence=response.confidence,
+                duration_ms=_elapsed_ms(workflow_started_at),
+                metadata={"trace_steps": len(response.trace)},
+            )
+            return response
+
+        if routing_decision in {AgentRoutingDecision.CLARIFY, AgentRoutingDecision.REFUSE}:
+            response = _build_refusal_response(
+                request_id=state.request_id,
+                session_id=state.session_id,
+                response_search_type=effective_search_type,
+                refusal_reason=route.refusal_reason or "needs_clarification",
+                answer=route.answer or "Нужны дополнительные уточнения по вопросу.",
+                trace=list(state.trace),
+            )
+            agent_runtime.finalize_response(state, response)
+            log_agent_event(
+                "request_completed",
+                request_id=state.request_id,
+                session_id=state.session_id,
+                search_type=response.search_type,
+                route=routing_decision.value,
+                outcome="refusal",
+                refusal_reason=response.refusal_reason,
+                cached=response.cached,
+                confidence=response.confidence,
+                duration_ms=_elapsed_ms(workflow_started_at),
+                metadata={"trace_steps": len(response.trace)},
+            )
+            return response
+
+        search_tool = route.selected_tool or (
+            "search_hybrid" if routing_decision == AgentRoutingDecision.RETRIEVE_HYBRID else "search_vector"
+        )
+        search_question = request.question
+        if should_apply_session_memory(request.question, session_memory):
+            search_question = build_memory_augmented_question(request.question, session_memory or {})
+            agent_runtime.record_step(
+                state,
+                AgentTraceStep(
+                    kind="runtime",
+                    status="completed",
+                    name="session_memory_applied",
+                    detail="Контекст предыдущих ходов добавлен к запросу поиска.",
+                    metadata={"original_question_length": len(request.question.strip()), **memory_stats},
+                ),
+            )
+            log_agent_event(
+                "session_memory_applied",
+                request_id=state.request_id,
+                session_id=state.session_id,
+                search_type=effective_search_type,
+                route=routing_decision.value,
+                status="completed",
+                metadata={"augmented_question_length": len(search_question), **memory_stats},
+            )
+
+        cache_lookup_started_at = perf_counter()
+        cache_result = agent_runtime.execute_tool(
+            state,
+            "get_cached_answer",
+            {"question": search_question, "search_type": effective_search_type},
+        )
+        cache_hit = cache_result.success and bool(cache_result.output.get("cache_hit"))
+        log_agent_event(
+            "cache_lookup_completed",
             request_id=state.request_id,
             session_id=state.session_id,
             search_type=effective_search_type,
             route=routing_decision.value,
-            status="completed",
-            metadata={"augmented_question_length": len(search_question), **memory_stats},
+            status="completed" if cache_result.success else "failed",
+            cached=cache_hit,
+            duration_ms=_elapsed_ms(cache_lookup_started_at),
         )
+        if cache_hit:
+            cached_payload = cache_result.output.get("value") or {}
+            response = _build_success_response(
+                request_id=state.request_id,
+                session_id=state.session_id,
+                response_search_type=effective_search_type,
+                payload=cached_payload,
+                trace=list(state.trace),
+                cached=True,
+            )
+            is_valid, refusal_reason, validation_message = validate_agent_response(
+                response,
+                source_count=len(cached_payload.get("sources", [])),
+            )
+            agent_runtime.record_step(
+                state,
+                AgentTraceStep(
+                    kind="validation",
+                    status="completed" if is_valid else "failed",
+                    name="response_validated",
+                    detail=validation_message,
+                ),
+            )
+            log_agent_event(
+                "response_validated",
+                request_id=state.request_id,
+                session_id=state.session_id,
+                search_type=effective_search_type,
+                route=routing_decision.value,
+                status="completed" if is_valid else "failed",
+                refusal_reason=refusal_reason if not is_valid else None,
+                cached=True,
+                confidence=response.confidence if is_valid else 0.0,
+            )
+            if not is_valid:
+                response = _build_refusal_response(
+                    request_id=state.request_id,
+                    session_id=state.session_id,
+                    response_search_type=effective_search_type,
+                    refusal_reason=refusal_reason or "insufficient_context",
+                    answer=(
+                        "В документе недостаточно подтверждённого контекста для безопасного ответа."
+                        if refusal_reason == "insufficient_context"
+                        else "Не удалось подтвердить ответ корректными цитатами из документа."
+                    ),
+                    trace=list(state.trace),
+                    cached=True,
+                )
+                agent_runtime.finalize_response(state, response)
+                log_agent_event(
+                    "request_completed",
+                    request_id=state.request_id,
+                    session_id=state.session_id,
+                    search_type=effective_search_type,
+                    route=routing_decision.value,
+                    outcome="refusal",
+                    refusal_reason=response.refusal_reason,
+                    cached=response.cached,
+                    confidence=response.confidence,
+                    duration_ms=_elapsed_ms(workflow_started_at),
+                    metadata={"trace_steps": len(response.trace)},
+                )
+                return response
+            history_saver(request.question, response.answer, effective_search_type)
+            _persist_session_memory(
+                agent_runtime=agent_runtime,
+                state=state,
+                session_id=state.session_id,
+                search_type=effective_search_type,
+                original_question=request.question,
+                answer=response.answer,
+                existing_memory=session_memory,
+            )
+            agent_runtime.finalize_response(state, response)
+            log_agent_event(
+                "request_completed",
+                request_id=state.request_id,
+                session_id=state.session_id,
+                search_type=effective_search_type,
+                route=routing_decision.value,
+                outcome="success",
+                cached=response.cached,
+                confidence=response.confidence,
+                duration_ms=_elapsed_ms(workflow_started_at),
+                metadata={"trace_steps": len(response.trace), "citation_count": len(response.citations)},
+            )
+            return response
 
-    cache_lookup_started_at = perf_counter()
-    cache_result = agent_runtime.execute_tool(
-        state,
-        "get_cached_answer",
-        {"question": search_question, "search_type": effective_search_type},
-    )
-    cache_hit = cache_result.success and bool(cache_result.output.get("cache_hit"))
-    log_agent_event(
-        "cache_lookup_completed",
-        request_id=state.request_id,
-        session_id=state.session_id,
-        search_type=effective_search_type,
-        route=routing_decision.value,
-        status="completed" if cache_result.success else "failed",
-        cached=cache_hit,
-        duration_ms=_elapsed_ms(cache_lookup_started_at),
-    )
-    if cache_hit:
-        cached_payload = cache_result.output.get("value") or {}
+        search_result = agent_runtime.execute_tool(
+            state,
+            search_tool,
+            {"question": search_question},
+        )
+        if not search_result.success:
+            agent_runtime.fail(state, search_result.error or "Ошибка инструмента")
+            response = _build_failure_response(
+                request_id=state.request_id,
+                session_id=state.session_id,
+                response_search_type=effective_search_type,
+                trace=list(state.trace),
+            )
+            log_agent_event(
+                "request_completed",
+                request_id=state.request_id,
+                session_id=state.session_id,
+                search_type=effective_search_type,
+                route=routing_decision.value,
+                outcome="failure",
+                refusal_reason=response.refusal_reason,
+                cached=response.cached,
+                confidence=response.confidence,
+                duration_ms=_elapsed_ms(workflow_started_at),
+                metadata={"trace_steps": len(response.trace)},
+            )
+            return response
+
+        payload = {
+            "answer": search_result.output.get("answer", ""),
+            "sources": search_result.output.get("sources", []),
+            "search_type": effective_search_type,
+        }
+        cache_write_result = agent_runtime.execute_tool(
+            state,
+            "set_cached_answer",
+            {
+                "question": search_question,
+                "search_type": effective_search_type,
+                "result": payload,
+            },
+            optional=True,
+        )
+        if not cache_write_result.success and not cache_write_result.output.get("skipped"):
+            agent_runtime.record_step(
+                state,
+                AgentTraceStep(
+                    kind="runtime",
+                    status="skipped",
+                    name="cache_write_failed_but_ignored",
+                    detail=cache_write_result.error,
+                ),
+            )
+            log_agent_event(
+                "cache_write_skipped",
+                request_id=state.request_id,
+                session_id=state.session_id,
+                search_type=effective_search_type,
+                route=routing_decision.value,
+                status="failed",
+                duration_ms=0,
+                metadata={"error": cache_write_result.error},
+            )
+
         response = _build_success_response(
             request_id=state.request_id,
             session_id=state.session_id,
             response_search_type=effective_search_type,
-            payload=cached_payload,
+            payload=payload,
             trace=list(state.trace),
-            cached=True,
+            cached=False,
         )
         is_valid, refusal_reason, validation_message = validate_agent_response(
             response,
-            source_count=len(cached_payload.get("sources", [])),
+            source_count=len(payload.get("sources", [])),
         )
-        state.add_trace_step(
+        agent_runtime.record_step(
+            state,
             AgentTraceStep(
                 kind="validation",
                 status="completed" if is_valid else "failed",
                 name="response_validated",
                 detail=validation_message,
-            )
+            ),
         )
         log_agent_event(
             "response_validated",
@@ -504,7 +684,7 @@ def execute_agent_chat(
             route=routing_decision.value,
             status="completed" if is_valid else "failed",
             refusal_reason=refusal_reason if not is_valid else None,
-            cached=True,
+            cached=False,
             confidence=response.confidence if is_valid else 0.0,
         )
         if not is_valid:
@@ -519,7 +699,7 @@ def execute_agent_chat(
                     else "Не удалось подтвердить ответ корректными цитатами из документа."
                 ),
                 trace=list(state.trace),
-                cached=True,
+                cached=False,
             )
             agent_runtime.finalize_response(state, response)
             log_agent_event(
@@ -560,113 +740,25 @@ def execute_agent_chat(
             metadata={"trace_steps": len(response.trace), "citation_count": len(response.citations)},
         )
         return response
-
-    search_result = agent_runtime.execute_tool(
-        state,
-        search_tool,
-        {"question": search_question},
-    )
-    if not search_result.success:
-        agent_runtime.fail(state, search_result.error or "Ошибка инструмента")
-        response = _build_failure_response(
-            request_id=state.request_id,
-            session_id=state.session_id,
-            response_search_type=effective_search_type,
-            trace=list(state.trace),
+    except (AgentBudgetExceededError, AgentPolicyViolationError) as exc:
+        refusal_reason = getattr(exc, "reason", "runtime_constraint_triggered")
+        tool_name = getattr(exc, "tool_name", None)
+        metadata = getattr(exc, "metadata", {})
+        effective_search_type = _resolve_effective_search_type(request, state.routing_decision)
+        agent_runtime.record_controlled_stop(
+            state,
+            refusal_reason=refusal_reason,
+            detail=str(exc),
+            tool_name=tool_name,
+            metadata=metadata,
         )
-        log_agent_event(
-            "request_completed",
-            request_id=state.request_id,
-            session_id=state.session_id,
-            search_type=effective_search_type,
-            route=routing_decision.value,
-            outcome="failure",
-            refusal_reason=response.refusal_reason,
-            cached=response.cached,
-            confidence=response.confidence,
-            duration_ms=_elapsed_ms(workflow_started_at),
-            metadata={"trace_steps": len(response.trace)},
-        )
-        return response
-
-    payload = {
-        "answer": search_result.output.get("answer", ""),
-        "sources": search_result.output.get("sources", []),
-        "search_type": effective_search_type,
-    }
-    cache_write_result = agent_runtime.execute_tool(
-        state,
-        "set_cached_answer",
-        {
-            "question": search_question,
-            "search_type": effective_search_type,
-            "result": payload,
-        },
-    )
-    if not cache_write_result.success:
-        state.add_trace_step(
-            AgentTraceStep(
-                kind="runtime",
-                status="skipped",
-                name="cache_write_failed_but_ignored",
-                detail=cache_write_result.error,
-            )
-        )
-        log_agent_event(
-            "cache_write_skipped",
-            request_id=state.request_id,
-            session_id=state.session_id,
-            search_type=effective_search_type,
-            route=routing_decision.value,
-            status="failed",
-            duration_ms=0,
-            metadata={"error": cache_write_result.error},
-        )
-
-    response = _build_success_response(
-        request_id=state.request_id,
-        session_id=state.session_id,
-        response_search_type=effective_search_type,
-        payload=payload,
-        trace=list(state.trace),
-        cached=False,
-    )
-    is_valid, refusal_reason, validation_message = validate_agent_response(
-        response,
-        source_count=len(payload.get("sources", [])),
-    )
-    state.add_trace_step(
-        AgentTraceStep(
-            kind="validation",
-            status="completed" if is_valid else "failed",
-            name="response_validated",
-            detail=validation_message,
-        )
-    )
-    log_agent_event(
-        "response_validated",
-        request_id=state.request_id,
-        session_id=state.session_id,
-        search_type=effective_search_type,
-        route=routing_decision.value,
-        status="completed" if is_valid else "failed",
-        refusal_reason=refusal_reason if not is_valid else None,
-        cached=False,
-        confidence=response.confidence if is_valid else 0.0,
-    )
-    if not is_valid:
         response = _build_refusal_response(
             request_id=state.request_id,
             session_id=state.session_id,
             response_search_type=effective_search_type,
-            refusal_reason=refusal_reason or "insufficient_context",
-            answer=(
-                "В документе недостаточно подтверждённого контекста для безопасного ответа."
-                if refusal_reason == "insufficient_context"
-                else "Не удалось подтвердить ответ корректными цитатами из документа."
-            ),
+            refusal_reason=refusal_reason,
+            answer=_build_controlled_stop_answer(refusal_reason),
             trace=list(state.trace),
-            cached=False,
         )
         agent_runtime.finalize_response(state, response)
         log_agent_event(
@@ -674,7 +766,7 @@ def execute_agent_chat(
             request_id=state.request_id,
             session_id=state.session_id,
             search_type=effective_search_type,
-            route=routing_decision.value,
+            route=state.routing_decision.value,
             outcome="refusal",
             refusal_reason=response.refusal_reason,
             cached=response.cached,
@@ -683,27 +775,3 @@ def execute_agent_chat(
             metadata={"trace_steps": len(response.trace)},
         )
         return response
-    history_saver(request.question, response.answer, effective_search_type)
-    _persist_session_memory(
-        agent_runtime=agent_runtime,
-        state=state,
-        session_id=state.session_id,
-        search_type=effective_search_type,
-        original_question=request.question,
-        answer=response.answer,
-        existing_memory=session_memory,
-    )
-    agent_runtime.finalize_response(state, response)
-    log_agent_event(
-        "request_completed",
-        request_id=state.request_id,
-        session_id=state.session_id,
-        search_type=effective_search_type,
-        route=routing_decision.value,
-        outcome="success",
-        cached=response.cached,
-        confidence=response.confidence,
-        duration_ms=_elapsed_ms(workflow_started_at),
-        metadata={"trace_steps": len(response.trace), "citation_count": len(response.citations)},
-    )
-    return response

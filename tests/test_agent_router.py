@@ -1,10 +1,13 @@
 import json
+import time
 import unittest
 from collections.abc import Callable
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.agent.budget import AgentBudget
+from app.agent.policy import AgentToolPolicy
 from app.agent.runtime import AgentRuntime
 from app.agent.schemas import ToolCall, ToolResult
 from app.agent.tools import RegisteredTool, ToolRegistry
@@ -25,6 +28,10 @@ def build_test_runtime(
     cached_writes: list[tuple[str, str, dict]] | None = None,
     session_memory_writes: list[tuple[str, dict]] | None = None,
     search_questions: list[tuple[str, str]] | None = None,
+    vector_delay_seconds: float = 0.0,
+    hybrid_delay_seconds: float = 0.0,
+    budget: AgentBudget | None = None,
+    policy: AgentToolPolicy | None = None,
 ) -> AgentRuntime:
     call_counters = calls if calls is not None else {}
     cache_writes = cached_writes if cached_writes is not None else []
@@ -61,6 +68,8 @@ def build_test_runtime(
         if fail_vector:
             raise RuntimeError("Vector tool unavailable")
         question = call.arguments["question"]
+        if vector_delay_seconds > 0:
+            time.sleep(vector_delay_seconds)
         captured_search_questions.append(("search_vector", question))
         return ToolResult(
             tool_name="search_vector",
@@ -79,6 +88,8 @@ def build_test_runtime(
         if fail_hybrid:
             raise RuntimeError("Hybrid tool unavailable")
         question = call.arguments["question"]
+        if hybrid_delay_seconds > 0:
+            time.sleep(hybrid_delay_seconds)
         captured_search_questions.append(("search_hybrid", question))
         return ToolResult(
             tool_name="search_hybrid",
@@ -139,7 +150,7 @@ def build_test_runtime(
     register_tool("search_hybrid", search_hybrid)
     register_tool("set_cached_answer", set_cached_answer)
     register_tool("set_session_memory", set_session_memory)
-    return AgentRuntime(registry)
+    return AgentRuntime(registry, budget=budget, policy=policy)
 
 
 class AgentRouterTestCase(unittest.TestCase):
@@ -526,6 +537,132 @@ class AgentRouterTestCase(unittest.TestCase):
         )
         self.assertTrue(session_memory_writes[0][1]["summary"])
         self.assertTrue(any(step["name"] == "session_memory_updated" for step in payload["trace"]))
+
+    def test_agent_chat_returns_refusal_when_max_tool_calls_budget_is_exceeded(self) -> None:
+        calls: dict[str, int] = {}
+        runtime = build_test_runtime(
+            calls=calls,
+            budget=AgentBudget(max_steps=16, max_tool_calls=2, max_runtime_seconds=15.0),
+        )
+        client = self.build_client(runtime)
+
+        response = client.post(
+            "/agent/chat",
+            json={
+                "question": "Какая форма аттестации?",
+                "search_type": "vector",
+                "session_id": "session-budget-tools",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["refusal_reason"], "budget_max_tool_calls_exceeded")
+        self.assertEqual(calls.get("get_session_memory", 0), 1)
+        self.assertEqual(calls.get("get_cached_answer", 0), 1)
+        self.assertEqual(calls.get("search_vector", 0), 0)
+        self.assertTrue(any(step["name"] == "budget_exceeded" for step in payload["trace"]))
+
+    def test_agent_chat_returns_refusal_when_max_steps_budget_is_exceeded(self) -> None:
+        calls: dict[str, int] = {}
+        runtime = build_test_runtime(
+            calls=calls,
+            budget=AgentBudget(max_steps=5, max_tool_calls=6, max_runtime_seconds=15.0),
+        )
+        client = self.build_client(runtime)
+
+        response = client.post(
+            "/agent/chat",
+            json={
+                "question": "Какая форма аттестации?",
+                "search_type": "vector",
+                "session_id": "session-budget-steps",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["refusal_reason"], "budget_max_steps_exceeded")
+        self.assertEqual(calls.get("get_session_memory", 0), 1)
+        self.assertEqual(calls.get("get_cached_answer", 0), 0)
+        self.assertTrue(any(step["name"] == "budget_exceeded" for step in payload["trace"]))
+
+    def test_agent_chat_returns_refusal_when_workflow_timeout_is_exceeded(self) -> None:
+        calls: dict[str, int] = {}
+        runtime = build_test_runtime(
+            calls=calls,
+            vector_delay_seconds=0.02,
+            budget=AgentBudget(max_steps=16, max_tool_calls=6, max_runtime_seconds=0.005),
+        )
+        client = self.build_client(runtime)
+
+        response = client.post(
+            "/agent/chat",
+            json={
+                "question": "Какая форма аттестации?",
+                "search_type": "vector",
+                "session_id": "session-budget-timeout",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["refusal_reason"], "workflow_timeout_exceeded")
+        self.assertEqual(calls.get("search_vector", 0), 1)
+        self.assertTrue(any(step["name"] == "budget_exceeded" for step in payload["trace"]))
+
+    def test_agent_chat_skips_noncritical_persistence_when_budget_is_nearly_exhausted(self) -> None:
+        calls: dict[str, int] = {}
+        runtime = build_test_runtime(
+            calls=calls,
+            budget=AgentBudget(max_steps=16, max_tool_calls=4, max_runtime_seconds=15.0),
+        )
+        client = self.build_client(runtime)
+
+        response = client.post(
+            "/agent/chat",
+            json={
+                "question": "Какая форма аттестации?",
+                "search_type": "vector",
+                "session_id": "session-budget-degrade",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIsNone(payload["refusal_reason"])
+        self.assertEqual(payload["answer"], "vector:Какая форма аттестации?")
+        self.assertEqual(calls.get("set_cached_answer", 0), 1)
+        self.assertEqual(calls.get("set_session_memory", 0), 0)
+        self.assertTrue(
+            any(
+                step["status"] == "skipped" and step.get("tool_name") == "set_session_memory"
+                for step in payload["trace"]
+            )
+        )
+
+    def test_agent_chat_blocks_tool_execution_by_policy_before_handler_call(self) -> None:
+        calls: dict[str, int] = {}
+        runtime = build_test_runtime(
+            calls=calls,
+            policy=AgentToolPolicy(blocked_tools={"search_vector"}),
+        )
+        client = self.build_client(runtime)
+
+        response = client.post(
+            "/agent/chat",
+            json={
+                "question": "Какая форма аттестации?",
+                "search_type": "vector",
+                "session_id": "session-policy-block",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["refusal_reason"], "tool_blocked_by_policy")
+        self.assertEqual(calls.get("search_vector", 0), 0)
+        self.assertTrue(any(step["name"] == "tool_execution_blocked" for step in payload["trace"]))
 
 
 if __name__ == "__main__":

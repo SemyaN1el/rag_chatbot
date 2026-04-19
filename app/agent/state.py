@@ -39,6 +39,7 @@ class AgentState(BaseModel):
     context_chunks: list[str] = Field(default_factory=list)
     response: AgentResponse | None = None
     error: str | None = None
+    started_at_monotonic: float | None = None
 
     @field_validator("session_id", "user_question", "normalized_question")
     @classmethod
@@ -73,8 +74,9 @@ class AgentState(BaseModel):
             payload["request_id"] = request_id
         return cls(**payload)
 
-    def start(self) -> None:
+    def start(self, *, started_at_monotonic: float | None = None) -> None:
         self.status = AgentStatus.RUNNING
+        self.started_at_monotonic = started_at_monotonic
 
     def set_routing_decision(
         self,

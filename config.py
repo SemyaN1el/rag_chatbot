@@ -60,3 +60,8 @@ SESSION_MEMORY_TTL = int(_get_env("SESSION_MEMORY_TTL", "14400"))  # время 
 # FastAPI
 API_HOST = _get_env("API_HOST", "0.0.0.0")
 API_PORT = int(_get_env("API_PORT", "8000"))
+
+# Agent runtime
+AGENT_MAX_STEPS = int(_get_env("AGENT_MAX_STEPS", "16"))
+AGENT_MAX_TOOL_CALLS = int(_get_env("AGENT_MAX_TOOL_CALLS", "6"))
+AGENT_MAX_RUNTIME_SECONDS = float(_get_env("AGENT_MAX_RUNTIME_SECONDS", "15"))
