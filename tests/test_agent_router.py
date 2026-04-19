@@ -388,6 +388,85 @@ class AgentRouterTestCase(unittest.TestCase):
         self.assertEqual(completed_event["outcome"], "refusal")
         self.assertEqual(completed_event["refusal_reason"], "insufficient_context")
 
+    def test_agent_chat_returns_direct_answer_without_retrieval_for_meta_question(self) -> None:
+        calls: dict[str, int] = {}
+        runtime = build_test_runtime(calls=calls)
+        client = self.build_client(runtime)
+
+        response = client.post(
+            "/agent/chat",
+            json={
+                "question": "Какие режимы поиска ты поддерживаешь?",
+                "search_type": "vector",
+                "session_id": "session-direct-answer",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIsNone(payload["refusal_reason"])
+        self.assertIn("два режима поиска", payload["answer"])
+        self.assertEqual(calls.get("search_vector", 0), 0)
+        self.assertEqual(calls.get("search_hybrid", 0), 0)
+        self.assertEqual(calls.get("get_cached_answer", 0), 0)
+        self.assertTrue(any(step["name"] == "direct_answer_returned" for step in payload["trace"]))
+
+    def test_agent_chat_requests_clarification_for_ambiguous_short_question(self) -> None:
+        calls: dict[str, int] = {}
+        runtime = build_test_runtime(calls=calls)
+        client = self.build_client(runtime)
+
+        response = client.post(
+            "/agent/chat",
+            json={"question": "А что еще?", "search_type": "vector"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["refusal_reason"], "needs_clarification")
+        self.assertEqual(calls.get("search_vector", 0), 0)
+        self.assertEqual(calls.get("search_hybrid", 0), 0)
+        self.assertEqual(calls.get("get_cached_answer", 0), 0)
+
+    def test_agent_chat_refuses_out_of_scope_question_before_retrieval(self) -> None:
+        calls: dict[str, int] = {}
+        runtime = build_test_runtime(calls=calls)
+        client = self.build_client(runtime)
+
+        response = client.post(
+            "/agent/chat",
+            json={"question": "Расскажи анекдот", "search_type": "vector"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["refusal_reason"], "out_of_scope")
+        self.assertEqual(calls.get("search_vector", 0), 0)
+        self.assertEqual(calls.get("search_hybrid", 0), 0)
+        self.assertEqual(calls.get("get_cached_answer", 0), 0)
+
+    def test_agent_chat_can_override_vector_request_with_hybrid_route(self) -> None:
+        calls: dict[str, int] = {}
+        runtime = build_test_runtime(calls=calls)
+        client = self.build_client(runtime)
+
+        response = client.post(
+            "/agent/chat",
+            json={
+                "question": "Сравни требования к практике и итоговой аттестации",
+                "search_type": "vector",
+                "session_id": "session-router-hybrid",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["search_type"], "hybrid")
+        self.assertEqual(calls.get("search_hybrid", 0), 1)
+        self.assertEqual(calls.get("search_vector", 0), 0)
+        routing_step = next(step for step in payload["trace"] if step["name"] == "routing_decision_applied")
+        self.assertIn("hybrid retrieval", routing_step["detail"])
+
     def test_agent_chat_applies_session_memory_to_followup_question(self) -> None:
         search_questions: list[tuple[str, str]] = []
         runtime = build_test_runtime(

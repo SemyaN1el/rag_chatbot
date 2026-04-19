@@ -105,12 +105,20 @@
 - После успешного ответа агент обновляет session summary и recent turns, чтобы следующие вопросы опирались на контекст сессии.
 - Добавлены unit- и API-тесты на follow-up сценарии, обновление памяти и включение memory-шагов в trace.
 
+### Intelligent router v1
+
+- Добавлен отдельный rule-based router `app/agent/router.py`.
+- Router теперь умеет выбирать `direct_answer`, `clarify`, `refuse`, `retrieve_vector`, `retrieve_hybrid`.
+- Решение теперь принимается не только по `search_type`, но и по содержанию вопроса, session memory и явным эвристикам на broad / meta / out-of-scope / ambiguous запросы.
+- Причина выбора маршрута теперь попадает в `trace` и structured logs через `routing_decision_applied`.
+- Добавлены unit-тесты на routing logic и API-тесты на direct answer, clarify, refuse и override из `vector` в `hybrid`.
+
 ## Текущие ограничения
 
 ### Архитектурные
 
 - Система пока является RAG-сервисом, а не полноценной агентной runtime-системой.
-- Появился первый рабочий agent endpoint, но routing пока rule-based и опирается только на `search_type`.
+- Появился рабочий router, но он пока полностью rule-based и эвристический.
 - Нет отдельного planner-слоя, который выбирает стратегию обработки запроса по содержанию самого вопроса.
 - Guardrails и validator появились в базовом виде, но пока покрывают только простые pattern-based проверки и валидацию citations/context.
 - Memory всё ещё не интегрирована в единый pipeline как short-term/long-term/context system.
@@ -258,7 +266,7 @@
 
 - Развивать уже добавленный маршрут `/agent/chat` в сторону более умного agent workflow.
 - Расширить использование `session_id`, agent state и bounded workflow за пределы текущего rule-based сценария.
-- Реализовать router: direct answer, retrieve, clarify, refuse.
+- Развивать уже добавленный router от rule-based эвристик к более осмысленному decision layer.
 - Обогащать structured response и downstream-контракты без потери обратной совместимости.
 
 ### Этап 3. Memory и guardrails

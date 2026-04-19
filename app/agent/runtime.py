@@ -46,6 +46,9 @@ class AgentRuntime:
         state: AgentState,
         decision: AgentRoutingDecision,
         selected_tool: str | None = None,
+        *,
+        detail: str | None = None,
+        metadata: dict | None = None,
     ) -> AgentState:
         state.set_routing_decision(decision, selected_tool=selected_tool)
         state.add_trace_step(
@@ -53,8 +56,9 @@ class AgentRuntime:
                 kind="routing",
                 status="completed",
                 name="routing_decision_applied",
-                detail=f"Маршрут запроса: {decision.value}",
+                detail=detail or f"Маршрут запроса: {decision.value}",
                 tool_name=selected_tool,
+                metadata=metadata or {},
             )
         )
         log_agent_event(
@@ -64,6 +68,7 @@ class AgentRuntime:
             route=decision.value,
             tool_name=selected_tool,
             status="completed",
+            metadata=metadata or {},
         )
         return state
 

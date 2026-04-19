@@ -377,3 +377,46 @@
 
 - Следующий шаг: сделать router умнее и научить его выбирать direct answer / retrieve / clarify по содержанию вопроса, а не только по `search_type`.
 - Отдельно стоит решить, какая часть session memory должна сохраняться в PostgreSQL как более долговременная память пользователя, а не только жить в Redis.
+
+### [2026-04-19] История 7: умный router
+
+**Статус:** выполнено
+
+**Цель:** перестать выбирать маршрут обработки только по `search_type` и добавить отдельный rule-based router, который умеет решать, когда нужен direct answer, clarify, refuse, vector retrieval или hybrid retrieval.
+
+**Чеклист выполненного:**
+
+- [x] Добавлен отдельный модуль `app/agent/router.py`.
+- [x] В routing enum добавлено состояние `clarify`.
+- [x] Router теперь поддерживает решения `direct_answer`, `clarify`, `refuse`, `retrieve_vector`, `retrieve_hybrid`.
+- [x] Workflow переведён на исполнение результата router-а вместо прямой привязки к `search_type`.
+- [x] Причина маршрутизации теперь попадает в `trace` и structured logs через `routing_decision_applied`.
+- [x] Добавлены unit-тесты для router logic.
+- [x] Добавлены API-тесты на direct answer, clarify, out-of-scope refuse и override `vector -> hybrid`.
+- [x] Обновлён текущий срез проекта в `docs/current-results.md`.
+
+**Изменённые файлы:**
+
+- `app/agent/router.py`
+- `app/agent/state.py`
+- `app/agent/runtime.py`
+- `app/agent/workflow.py`
+- `app/agent/__init__.py`
+- `tests/test_agent_route_logic.py`
+- `tests/test_agent_router.py`
+- `docs/current-results.md`
+- `docs/implementation-log.md`
+
+**Проверка:**
+
+- Запущено `python -m unittest discover -s tests -v`.
+- Проверено, что все тесты проходят: `39/39 OK`.
+- Проверено, что meta-вопросы об агенте идут в `direct_answer` без retrieval.
+- Проверено, что короткие неяcные вопросы без контекста идут в `clarify`.
+- Проверено, что out-of-scope вопросы отсекаются до retrieval.
+- Проверено, что широкий сравнительный вопрос может перевести `vector`-запрос в `hybrid`.
+
+**Известные follow-up пункты:**
+
+- Следующий шаг: добавить budget controls и policy checks на уровне agent runtime.
+- После этого можно переходить к agent-eval сценарию с проверкой correctness не только ответа, но и route/tool choice.

@@ -18,6 +18,7 @@ class AgentStatus(str, Enum):
 class AgentRoutingDecision(str, Enum):
     UNDECIDED = "undecided"
     DIRECT_ANSWER = "direct_answer"
+    CLARIFY = "clarify"
     RETRIEVE_VECTOR = "retrieve_vector"
     RETRIEVE_HYBRID = "retrieve_hybrid"
     REFUSE = "refuse"
