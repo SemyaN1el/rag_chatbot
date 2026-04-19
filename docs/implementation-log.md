@@ -183,3 +183,40 @@
 
 - Следующий шаг: добавить guardrails v1 и отдельный validator output-а.
 - После этого можно расширять routing и memory без поломки публичного контракта `/agent/chat`.
+
+### [2026-04-19] История 4: guardrails v1 и validator ответа
+
+**Статус:** выполнено
+
+**Цель:** добавить базовые guardrails на входе и validator на выходе нового `/agent/chat`, чтобы unsafe input и неподтверждённые ответы переводились в контролируемый refusal.
+
+**Чеклист выполненного:**
+
+- [x] Добавлен входной guardrail-слой с проверкой на простые injection/jailbreak-паттерны.
+- [x] Unsafe input теперь останавливает workflow до cache/retrieval tool calls.
+- [x] Добавлен validator ответа на достаточность контекста и наличие валидных citations.
+- [x] Ответы без источников или без подтверждающих citations переводятся в refusal.
+- [x] В trace добавлены отдельные шаги валидации входа и ответа.
+- [x] Добавлены тесты на unsafe input, пустой контекст и ответ без citations.
+- [x] Обновлён текущий срез проекта в `docs/current-results.md`.
+
+**Изменённые файлы:**
+
+- `app/agent/__init__.py`
+- `app/agent/guardrails.py`
+- `app/agent/validators.py`
+- `app/agent/workflow.py`
+- `tests/test_agent_router.py`
+- `docs/current-results.md`
+- `docs/implementation-log.md`
+
+**Проверка:**
+
+- Запустить `python -m unittest discover -s tests -v`.
+- Проверить, что unsafe input больше не доходит до tool layer.
+- Проверить, что ответы без контекста или без citations отдаются как refusal, а не как обычный success.
+
+**Известные follow-up пункты:**
+
+- Следующий шаг: расширить guardrails до scope/relevance checks и более сильного output validator-а.
+- После этого можно переходить к observability или session memory, не теряя уже введённую safety-базу.

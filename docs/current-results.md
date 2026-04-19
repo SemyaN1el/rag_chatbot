@@ -72,6 +72,14 @@
 - Ошибка retrieval tool не валит endpoint, а превращается в контролируемый agent response с отказом и trace.
 - Добавлены API-тесты на успешные сценарии, cache hit, контролируемый failure и валидацию пустого вопроса.
 
+### Guardrails v1 и validator ответа
+
+- Добавлен входной guardrail-слой с базовой защитой от injection/jailbreak-паттернов.
+- Unsafe input теперь останавливает workflow до cache lookup и retrieval tool calls.
+- Добавлен validator ответа, который не пропускает неподтверждённые ответы без контекста или без citations.
+- Ответы без источников или без валидных citations переводятся в контролируемый refusal с понятной причиной.
+- Trace теперь включает отдельные шаги `input_guardrails_checked` и `response_validated`.
+
 ## Текущие ограничения
 
 ### Архитектурные
@@ -80,7 +88,8 @@
 - Появился начальный каркас `app/agent`, но он ещё не подключён к API и реальному workflow обработки запросов.
 - Появился первый рабочий agent endpoint, но routing пока rule-based и опирается только на `search_type`.
 - Нет отдельного planner-слоя, который выбирает стратегию обработки запроса по содержанию самого вопроса.
-- Memory, guardrails и validators ещё не интегрированы в единый pipeline.
+- Guardrails и validator появились в базовом виде, но пока покрывают только простые pattern-based проверки и валидацию citations/context.
+- Memory всё ещё не интегрирована в единый pipeline как short-term/long-term/context system.
 
 ### Retrieval и knowledge layer
 
@@ -93,9 +102,10 @@
 
 - Текущая "память" ограничена историей чата и кэшем, но не оформлена как short-term, long-term и context memory.
 - Нет entity memory, session memory summary и политики записи фактов о пользователе.
-- Нет input/output guardrails.
-- Нет защиты от prompt injection, jailbreak и tool misuse.
-- Нет строгой схемы ответа с обязательными citation-ами, confidence и refusal reason.
+- Есть базовые input/output guardrails, но пока только первого уровня.
+- Есть начальная защита от простых prompt injection и jailbreak-паттернов.
+- Есть базовая проверка на отсутствие подтверждающего контекста и citations.
+- Нет полноценного policy layer для scope checks, tool permissions и более сильных output validators.
 
 ### Production readiness
 

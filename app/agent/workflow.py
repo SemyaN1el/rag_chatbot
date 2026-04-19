@@ -3,10 +3,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from uuid import uuid4
 
+from app.agent.guardrails import check_input_guardrails
 from app.agent.runtime import AgentRuntime
 from app.agent.schemas import AgentChatRequest, AgentChatResponse, AgentCitation, AgentTraceStep
 from app.agent.service_tools import register_default_tools
 from app.agent.state import AgentRoutingDecision
+from app.agent.validators import validate_agent_response
 
 HistorySaver = Callable[[str, str, str], None]
 
@@ -110,6 +112,29 @@ def _build_failure_response(
     )
 
 
+def _build_refusal_response(
+    *,
+    request: AgentChatRequest,
+    request_id: str,
+    session_id: str,
+    refusal_reason: str,
+    answer: str,
+    trace: list[AgentTraceStep],
+    cached: bool = False,
+) -> AgentChatResponse:
+    return AgentChatResponse(
+        request_id=request_id,
+        session_id=session_id,
+        search_type=request.search_type,
+        cached=cached,
+        answer=answer,
+        citations=[],
+        confidence=0.0,
+        refusal_reason=refusal_reason,
+        trace=trace,
+    )
+
+
 def execute_agent_chat(
     request: AgentChatRequest,
     *,
@@ -139,6 +164,26 @@ def execute_agent_chat(
             detail="Входной запрос прошёл базовую валидацию.",
         )
     )
+    input_allowed, guard_reason, guard_message = check_input_guardrails(request.question)
+    state.add_trace_step(
+        AgentTraceStep(
+            kind="validation",
+            status="completed" if input_allowed else "failed",
+            name="input_guardrails_checked",
+            detail=guard_message,
+        )
+    )
+    if not input_allowed:
+        response = _build_refusal_response(
+            request=request,
+            request_id=state.request_id,
+            session_id=state.session_id,
+            refusal_reason=guard_reason or "unsafe_input",
+            answer="Запрос отклонён политикой безопасности агента.",
+            trace=list(state.trace),
+        )
+        agent_runtime.finalize_response(state, response)
+        return response
 
     routing_decision, search_tool = _resolve_route(request.search_type)
     agent_runtime.apply_routing_decision(
@@ -162,6 +207,34 @@ def execute_agent_chat(
             trace=list(state.trace),
             cached=True,
         )
+        is_valid, refusal_reason, validation_message = validate_agent_response(
+            response,
+            source_count=len(cached_payload.get("sources", [])),
+        )
+        state.add_trace_step(
+            AgentTraceStep(
+                kind="validation",
+                status="completed" if is_valid else "failed",
+                name="response_validated",
+                detail=validation_message,
+            )
+        )
+        if not is_valid:
+            response = _build_refusal_response(
+                request=request,
+                request_id=state.request_id,
+                session_id=state.session_id,
+                refusal_reason=refusal_reason or "insufficient_context",
+                answer=(
+                    "В документе недостаточно подтверждённого контекста для безопасного ответа."
+                    if refusal_reason == "insufficient_context"
+                    else "Не удалось подтвердить ответ корректными цитатами из документа."
+                ),
+                trace=list(state.trace),
+                cached=True,
+            )
+            agent_runtime.finalize_response(state, response)
+            return response
         history_saver(request.question, response.answer, request.search_type)
         agent_runtime.finalize_response(state, response)
         return response
@@ -212,6 +285,34 @@ def execute_agent_chat(
         trace=list(state.trace),
         cached=False,
     )
+    is_valid, refusal_reason, validation_message = validate_agent_response(
+        response,
+        source_count=len(payload.get("sources", [])),
+    )
+    state.add_trace_step(
+        AgentTraceStep(
+            kind="validation",
+            status="completed" if is_valid else "failed",
+            name="response_validated",
+            detail=validation_message,
+        )
+    )
+    if not is_valid:
+        response = _build_refusal_response(
+            request=request,
+            request_id=state.request_id,
+            session_id=state.session_id,
+            refusal_reason=refusal_reason or "insufficient_context",
+            answer=(
+                "В документе недостаточно подтверждённого контекста для безопасного ответа."
+                if refusal_reason == "insufficient_context"
+                else "Не удалось подтвердить ответ корректными цитатами из документа."
+            ),
+            trace=list(state.trace),
+            cached=False,
+        )
+        agent_runtime.finalize_response(state, response)
+        return response
     history_saver(request.question, response.answer, request.search_type)
     agent_runtime.finalize_response(state, response)
     return response
