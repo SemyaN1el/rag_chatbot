@@ -1,9 +1,7 @@
 from langchain_qdrant import QdrantVectorStore
 from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_ollama import ChatOllama
-from langchain_core.prompts import PromptTemplate
-from langchain_classic.chains.retrieval_qa.base import RetrievalQA
 from qdrant_client import QdrantClient
+from app.services.llm import generate_text_from_prompt
 from hybrid_search import hybrid_search
 from config import *
 
@@ -20,8 +18,19 @@ PROMPT_TEMPLATE = """Ты — помощник, отвечающий на воп
 Ответ:"""
 
 
-def get_vector_chain():
-    """Строим цепочку векторного поиска"""
+class SimpleVectorChain:
+    def invoke(self, payload: dict) -> dict:
+        question = payload["query"]
+        documents = retrieve_vector_documents(question)
+        context = "\n\n".join(doc.page_content for doc in documents)
+        answer = generate_answer_from_context(question, context)
+        return {
+            "result": answer,
+            "source_documents": documents,
+        }
+
+
+def get_vectorstore() -> QdrantVectorStore:
     embeddings = HuggingFaceEmbeddings(
         model_name=EMBEDDING_MODEL,
         encode_kwargs={"normalize_embeddings": True}
@@ -32,18 +41,22 @@ def get_vector_chain():
         collection_name=COLLECTION_NAME,
         embedding=embeddings
     )
-    llm = ChatOllama(model=OLLAMA_MODEL, temperature=0)
-    prompt = PromptTemplate(
-        template=PROMPT_TEMPLATE,
-        input_variables=["context", "question"]
-    )
-    return RetrievalQA.from_chain_type(
-        llm=llm,
-        chain_type="stuff",
-        retriever=vectorstore.as_retriever(search_kwargs={"k": TOP_K}),
-        chain_type_kwargs={"prompt": prompt},
-        return_source_documents=True
-    )
+    return vectorstore
+
+
+def get_vector_chain() -> SimpleVectorChain:
+    """Строим цепочку векторного поиска"""
+    return SimpleVectorChain()
+
+
+def retrieve_vector_documents(question: str):
+    vectorstore = get_vectorstore()
+    return vectorstore.similarity_search(question, k=TOP_K)
+
+
+def generate_answer_from_context(question: str, context: str) -> str:
+    filled_prompt = PROMPT_TEMPLATE.format(context=context, question=question)
+    return generate_text_from_prompt(filled_prompt, temperature=LLM_TEMPERATURE)
 
 
 def ask_vector(question: str) -> dict:
@@ -68,14 +81,7 @@ def ask_hybrid(question: str) -> dict:
     """Ответ через гибридный поиск"""
     results = hybrid_search(question, top_k=TOP_K)
     context = "\n\n".join([r["text"] for r in results])
-
-    llm = ChatOllama(model=OLLAMA_MODEL, temperature=0)
-    prompt = PromptTemplate(
-        template=PROMPT_TEMPLATE,
-        input_variables=["context", "question"]
-    )
-    filled = prompt.format(context=context, question=question)
-    answer = llm.invoke(filled).content
+    answer = generate_answer_from_context(question, context)
 
     sources = [
         {

@@ -1,6 +1,5 @@
 from hybrid_search import hybrid_search
-from langchain_ollama import ChatOllama
-from langchain_core.prompts import PromptTemplate
+from app.services.llm import generate_text_from_prompt
 from config import *
 
 PROMPT_TEMPLATE = """Ты — помощник, отвечающий на вопросы по документу.
@@ -19,17 +18,10 @@ PROMPT_TEMPLATE = """Ты — помощник, отвечающий на воп
 def ask_hybrid(question: str):
     results = hybrid_search(question, top_k=TOP_K)
     context = "\n\n".join([r["text"] for r in results])
+    filled_prompt = PROMPT_TEMPLATE.format(context=context, question=question)
+    response = generate_text_from_prompt(filled_prompt, temperature=LLM_TEMPERATURE)
 
-    prompt = PromptTemplate(
-        template=PROMPT_TEMPLATE,
-        input_variables=["context", "question"]
-    )
-    filled_prompt = prompt.format(context=context, question=question)
-
-    llm = ChatOllama(model=OLLAMA_MODEL, temperature=0)
-    response = llm.invoke(filled_prompt)
-
-    print(f"\nОтвет:\n{response.content}")
+    print(f"\nОтвет:\n{response}")
 
     print(f"\nИсточники (RRF scores):")
     for i, r in enumerate(results, 1):

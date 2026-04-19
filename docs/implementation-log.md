@@ -220,3 +220,47 @@
 
 - Следующий шаг: расширить guardrails до scope/relevance checks и более сильного output validator-а.
 - После этого можно переходить к observability или session memory, не теряя уже введённую safety-базу.
+
+### [2026-04-19] Переход на Groq и `.env`-конфиг
+
+**Статус:** выполнено
+
+**Цель:** заменить текущую LLM-завязку на Groq API, вынести LLM-конфиг в `.env` и перевести retrieval/chat/eval-слой на единый адаптер провайдера.
+
+**Чеклист выполненного:**
+
+- [x] `config.py` переведён на чтение `.env` и переменных окружения.
+- [x] Добавлен единый Groq-адаптер `app/services/llm.py`.
+- [x] Убраны прямые зависимости от `ChatOllama` в `app/services/rag.py`, `chat.py`, `hybrid_chat.py`, `evaluate.py`.
+- [x] В проект добавлен `.env.example` для воспроизводимой настройки.
+- [x] Локально создан `.env` с LLM-настройками для Groq.
+- [x] Обновлены `requirements.txt` и `pyproject.toml` под новый LLM-path.
+- [x] Добавлены unit-тесты для LLM helper-функций.
+- [x] Обновлены `readme.md` и текущий срез проекта.
+
+**Изменённые файлы:**
+
+- `config.py`
+- `app/services/llm.py`
+- `app/services/rag.py`
+- `chat.py`
+- `hybrid_chat.py`
+- `evaluate.py`
+- `requirements.txt`
+- `pyproject.toml`
+- `.env.example`
+- `tests/test_llm_service.py`
+- `readme.md`
+- `docs/current-results.md`
+- `docs/implementation-log.md`
+
+**Проверка:**
+
+- Запущено `python -m unittest discover -s tests -v`.
+- Проверены импорты `chat`, `evaluate`, `app.services.rag`, `app.services.llm`.
+- Дополнительно проверено, что следов `ChatOllama` в проектном коде больше нет.
+
+**Известные follow-up пункты:**
+
+- Следующий шаг: при желании ввести provider abstraction не только для Groq, но и для fallback-провайдера.
+- Если потребуется production-hardening, отдельно стоит добавить rotation-friendly secret management вместо локального `.env`.

@@ -13,9 +13,8 @@ from ragas.metrics import (
 from ragas.llms.base import BaseRagasLLM
 from ragas.run_config import RunConfig
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_ollama import ChatOllama
 from langchain_core.outputs import LLMResult
-from langchain_core.prompts import PromptTemplate
+from app.services.llm import agenerate_llm_result, generate_llm_result, generate_text_from_prompt
 from langchain_core.prompt_values import PromptValue
 from chat import build_chain
 from hybrid_search import hybrid_search
@@ -53,15 +52,7 @@ def resolve_dataset_path(args: argparse.Namespace) -> Path:
     return DEFAULT_EVAL_DATASET_PATH
 
 
-def build_answer_llm() -> ChatOllama:
-    return ChatOllama(
-        model=OLLAMA_MODEL,
-        temperature=0,
-        seed=42,
-    )
-
-
-class SchemaAwareOllamaRagasLLM(BaseRagasLLM):
+class SchemaAwareGroqRagasLLM(BaseRagasLLM):
     schema_start_marker = "following schema as specified in JSON Schema:\n"
     schema_end_marker = "Do not use single quotes in your response but double quotes,"
 
@@ -81,25 +72,6 @@ class SchemaAwareOllamaRagasLLM(BaseRagasLLM):
         except json.JSONDecodeError:
             return None
 
-    def _build_llm(self, prompt: PromptValue, temperature: float) -> ChatOllama:
-        schema = self._extract_schema(prompt.to_string())
-        return ChatOllama(
-            model=OLLAMA_MODEL,
-            temperature=temperature,
-            seed=42,
-            disable_streaming=True,
-            num_ctx=8192,
-            format=schema,
-        )
-
-    def _normalize_generations(self, result: LLMResult, n: int) -> LLMResult:
-        if n == 1:
-            return result
-
-        generations = [[generation[0] for generation in result.generations]]
-        result.generations = generations
-        return result
-
     def is_finished(self, response: LLMResult) -> bool:
         return True
 
@@ -111,13 +83,13 @@ class SchemaAwareOllamaRagasLLM(BaseRagasLLM):
         stop: list[str] | None = None,
         callbacks=None,
     ) -> LLMResult:
-        llm = self._build_llm(prompt, temperature)
-        result = llm.generate_prompt(
-            prompts=[prompt] * n,
+        return generate_llm_result(
+            prompt.to_string(),
+            n=n,
+            temperature=temperature,
             stop=stop,
-            callbacks=callbacks,
+            response_schema=self._extract_schema(prompt.to_string()),
         )
-        return self._normalize_generations(result, n)
 
     async def agenerate_text(
         self,
@@ -127,13 +99,13 @@ class SchemaAwareOllamaRagasLLM(BaseRagasLLM):
         stop: list[str] | None = None,
         callbacks=None,
     ) -> LLMResult:
-        llm = self._build_llm(prompt, temperature or 0.01)
-        result = await llm.agenerate_prompt(
-            prompts=[prompt] * n,
+        return await agenerate_llm_result(
+            prompt.to_string(),
+            n=n,
+            temperature=temperature or 0.01,
             stop=stop,
-            callbacks=callbacks,
+            response_schema=self._extract_schema(prompt.to_string()),
         )
-        return self._normalize_generations(result, n)
 
 
 def build_metric_embeddings() -> HuggingFaceEmbeddings:
@@ -190,8 +162,6 @@ def collect_rag_results(test_questions: list[dict], use_hybrid: bool = False) ->
             Вопрос: {question}
             Ответ:"""
 
-    llm = build_answer_llm()
-
     for item in test_questions:
         question = item["question"]
         print(f"   Обрабатываем: '{question[:50]}...'")
@@ -208,7 +178,7 @@ def collect_rag_results(test_questions: list[dict], use_hybrid: bool = False) ->
                 context="\n\n".join(context_texts),
                 question=question
             )
-            answer = llm.invoke(filled).content
+            answer = generate_text_from_prompt(filled, temperature=LLM_TEMPERATURE)
 
         else:
             result = chain.invoke({"query": question})
@@ -250,7 +220,7 @@ def run_evaluation(dataset: Dataset, label: str) -> dict:
     result = evaluate(
         dataset=dataset,
         metrics=metrics,
-        llm=SchemaAwareOllamaRagasLLM(),
+        llm=SchemaAwareGroqRagasLLM(),
         embeddings=build_metric_embeddings(),
         run_config=run_config,
         raise_exceptions=False,

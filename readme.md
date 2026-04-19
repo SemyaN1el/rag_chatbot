@@ -11,7 +11,7 @@
 - FastAPI
 - LangChain
 - Qdrant
-- Ollama
+- Groq API
 - sentence-transformers
 - rank-bm25
 - PostgreSQL
@@ -40,7 +40,7 @@ rag_chatbot/
 
 - Python 3.12
 - Docker Desktop
-- Ollama
+- API-ключ Groq
 
 ## Установка
 
@@ -92,12 +92,19 @@ docker compose up -d
 - PostgreSQL на `localhost:5432`
 - Redis на `localhost:6379`
 
-### 5. Подготовить Ollama
+### 5. Настроить `.env`
 
-```bash
-ollama pull llama3.2
-ollama serve
+Скопируй пример и задай переменные:
+
+```powershell
+Copy-Item .env.example .env
 ```
+
+Минимально нужны:
+
+- `LLM_PROVIDER=groq`
+- `GROQ_MODEL=llama-3.3-70b-versatile`
+- `GROQ_API_KEY=...`
 
 ## Запуск
 
@@ -225,7 +232,7 @@ PDF
   -> embedding запроса
   -> similarity search в Qdrant
   -> top-k чанков
-  -> prompt + Ollama
+  -> prompt + Groq API
   -> ответ
 ```
 
@@ -237,7 +244,7 @@ PDF
   -> vector search
   -> RRF fusion
   -> top-k чанков
-  -> prompt + Ollama
+  -> prompt + Groq API
   -> ответ
 ```
 
@@ -252,7 +259,8 @@ PDF
 Основные настройки находятся в `config.py`:
 
 ```python
-OLLAMA_MODEL = "llama3.2:latest"
+LLM_PROVIDER = "groq"
+GROQ_MODEL = "llama-3.3-70b-versatile"
 EMBEDDING_MODEL = "intfloat/multilingual-e5-large"
 QDRANT_URL = "http://localhost:6333"
 COLLECTION_NAME = "pdf_docs"
