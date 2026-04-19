@@ -1,3 +1,4 @@
+import json
 import unittest
 from collections.abc import Callable
 
@@ -146,6 +147,9 @@ class AgentRouterTestCase(unittest.TestCase):
         self.assertEqual(payload["answer"], "vector:Какая форма аттестации?")
         self.assertEqual(payload["citations"][0]["page"], 1)
         self.assertGreaterEqual(len(payload["trace"]), 4)
+        tool_steps = [step for step in payload["trace"] if step["kind"] == "tool"]
+        self.assertTrue(tool_steps)
+        self.assertTrue(all(step["duration_ms"] is not None for step in tool_steps))
         self.assertEqual(
             self.history_calls,
             [("Какая форма аттестации?", "vector:Какая форма аттестации?", "vector")],
@@ -290,6 +294,53 @@ class AgentRouterTestCase(unittest.TestCase):
         self.assertEqual(payload["refusal_reason"], "missing_citations")
         self.assertEqual(payload["confidence"], 0.0)
         self.assertEqual(payload["citations"], [])
+
+    def test_agent_chat_emits_structured_logs_for_success(self) -> None:
+        runtime = build_test_runtime()
+        client = self.build_client(runtime)
+
+        with self.assertLogs("app.agent", level="INFO") as captured:
+            response = client.post(
+                "/agent/chat",
+                json={
+                    "question": "Какая форма аттестации?",
+                    "search_type": "vector",
+                    "session_id": "session-log-success",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        log_events = [json.loads(entry.split(":", 2)[2]) for entry in captured.output]
+        event_names = {event["event"] for event in log_events}
+        self.assertIn("request_started", event_names)
+        self.assertIn("routing_decision_applied", event_names)
+        self.assertIn("tool_executed", event_names)
+        self.assertIn("request_completed", event_names)
+        self.assertNotIn("Какая форма аттестации?", "\n".join(captured.output))
+        completed_event = next(event for event in log_events if event["event"] == "request_completed")
+        self.assertEqual(completed_event["request_id"], payload["request_id"])
+        self.assertEqual(completed_event["session_id"], "session-log-success")
+        self.assertEqual(completed_event["outcome"], "success")
+        self.assertEqual(completed_event["search_type"], "vector")
+
+    def test_agent_chat_emits_refusal_outcome_in_logs(self) -> None:
+        runtime = build_test_runtime(vector_sources=[], vector_answer="Недостаточно оснований")
+        client = self.build_client(runtime)
+
+        with self.assertLogs("app.agent", level="INFO") as captured:
+            response = client.post(
+                "/agent/chat",
+                json={"question": "Есть ли сведения об отсрочке?", "search_type": "vector"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["refusal_reason"], "insufficient_context")
+        log_events = [json.loads(entry.split(":", 2)[2]) for entry in captured.output]
+        completed_event = next(event for event in log_events if event["event"] == "request_completed")
+        self.assertEqual(completed_event["outcome"], "refusal")
+        self.assertEqual(completed_event["refusal_reason"], "insufficient_context")
 
 
 if __name__ == "__main__":

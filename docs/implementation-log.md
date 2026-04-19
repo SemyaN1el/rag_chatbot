@@ -264,3 +264,71 @@
 
 - Следующий шаг: при желании ввести provider abstraction не только для Groq, но и для fallback-провайдера.
 - Если потребуется production-hardening, отдельно стоит добавить rotation-friendly secret management вместо локального `.env`.
+
+### [2026-04-19] Уборка служебных `__pycache__` из git
+
+**Статус:** выполнено
+
+**Цель:** убрать из отслеживаемых файлов служебные Python-артефакты, чтобы `git status` не засорялся `.pyc`-файлами.
+
+**Чеклист выполненного:**
+
+- [x] Проверено, что `.gitignore` уже игнорирует `__pycache__/` и `*.py[cod]`.
+- [x] Все ранее отслеживаемые `.pyc`-файлы удалены из git-индекса через `git rm --cached`.
+- [x] Рабочее дерево очищено от лишних служебных изменений, связанных с байткодом.
+
+**Изменённые файлы:**
+
+- `app/__pycache__/main.cpython-312.pyc`
+- `app/routers/__pycache__/chat.cpython-312.pyc`
+- `app/services/__pycache__/cache.cpython-312.pyc`
+- `app/services/__pycache__/history.cpython-312.pyc`
+- `app/services/__pycache__/rag.cpython-312.pyc`
+- `docs/implementation-log.md`
+
+**Проверка:**
+
+- Проверить, что `git ls-files | rg __pycache__` больше не возвращает отслеживаемые служебные файлы после коммита.
+- Проверить, что новые локальные `.pyc` больше не появляются в составе изменений.
+
+**Известные follow-up пункты:**
+
+- Следующий осмысленный продуктовый шаг: вернуться к roadmap агентной системы и начать `Историю 5` про observability и structured logging.
+
+### [2026-04-19] История 5: observability и structured logging
+
+**Статус:** выполнено
+
+**Цель:** добавить базовую наблюдаемость в agent workflow, чтобы шаги `/agent/chat` были видны и в trace, и во внешних структурированных логах.
+
+**Чеклист выполненного:**
+
+- [x] Добавлен отдельный observability-слой `app/agent/observability.py` с JSON-логами через logger `app.agent`.
+- [x] В runtime добавлено логирование инициализации, routing decision, tool execution и runtime failure.
+- [x] В workflow добавлено логирование старта запроса, guardrails, cache lookup, response validation и завершения запроса.
+- [x] Tool trace steps теперь содержат `duration_ms`.
+- [x] В логи не пишется сырой текст вопроса; вместо этого сохраняются технические признаки вроде `question_length`.
+- [x] Добавлены тесты на structured logs для success/refusal сценариев.
+- [x] Обновлён текущий срез проекта в `docs/current-results.md`.
+
+**Изменённые файлы:**
+
+- `app/agent/observability.py`
+- `app/agent/runtime.py`
+- `app/agent/workflow.py`
+- `app/agent/__init__.py`
+- `tests/test_agent_router.py`
+- `docs/current-results.md`
+- `docs/implementation-log.md`
+
+**Проверка:**
+
+- Запущено `python -m unittest discover -s tests -v`.
+- Проверено, что все тесты проходят: `26/26 OK`.
+- Проверено, что `/agent/chat` пишет структурированные события `request_started`, `tool_executed`, `response_validated`, `request_completed`.
+- Проверено, что tool-шаги в trace содержат `duration_ms`.
+
+**Известные follow-up пункты:**
+
+- Следующий шаг: выделить метрики latency/outcome в отдельный счётчик или backend наблюдаемости.
+- После этого логично идти в session memory, router intelligence или budget controls, уже опираясь на появившийся telemetry layer.

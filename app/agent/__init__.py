@@ -1,4 +1,5 @@
 from app.agent.guardrails import check_input_guardrails
+from app.agent.observability import get_agent_logger, log_agent_event
 from app.agent.runtime import AgentRuntime
 from app.agent.schemas import (
     AgentChatRequest,
@@ -37,6 +38,8 @@ __all__ = [
     "create_search_tool",
     "create_set_cached_answer_tool",
     "execute_agent_chat",
+    "get_agent_logger",
+    "log_agent_event",
     "register_default_tools",
     "RegisteredTool",
     "ToolCall",

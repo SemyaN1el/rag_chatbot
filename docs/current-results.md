@@ -29,7 +29,7 @@
 ### Базовый RAG
 
 - Индексация PDF через `PyPDFLoader`, `RecursiveCharacterTextSplitter` и `multilingual-e5-large`.
-- Векторный режим ответа через `RetrievalQA`.
+- Векторный режим ответа через retrieval + prompt assembly с вызовом Groq API.
 - Гибридный режим через BM25 + vector search + RRF fusion.
 - Консольные сценарии для обычного и гибридного чата.
 
@@ -88,12 +88,19 @@
 - Ответы без источников или без валидных citations переводятся в контролируемый refusal с понятной причиной.
 - Trace теперь включает отдельные шаги `input_guardrails_checked` и `response_validated`.
 
+### Observability и structured logging v1
+
+- Для agent runtime добавлен отдельный observability-слой с JSON-логами через `app.agent`.
+- Логи теперь фиксируют ключевые agent-события: старт запроса, routing, cache lookup, tool execution, validation, completion и runtime failure.
+- В каждое событие включаются `request_id`, `session_id`, outcome/status и полезные технические поля без логирования сырого пользовательского вопроса.
+- Tool steps в trace теперь содержат `duration_ms`, что даёт минимальную latency-наблюдаемость по шагам agent workflow.
+- Добавлены тесты, которые проверяют и структуру логов, и наличие событий успеха/отказа.
+
 ## Текущие ограничения
 
 ### Архитектурные
 
 - Система пока является RAG-сервисом, а не полноценной агентной runtime-системой.
-- Появился начальный каркас `app/agent`, но он ещё не подключён к API и реальному workflow обработки запросов.
 - Появился первый рабочий agent endpoint, но routing пока rule-based и опирается только на `search_type`.
 - Нет отдельного planner-слоя, который выбирает стратегию обработки запроса по содержанию самого вопроса.
 - Guardrails и validator появились в базовом виде, но пока покрывают только простые pattern-based проверки и валидацию citations/context.
@@ -118,7 +125,8 @@
 ### Production readiness
 
 - Часть LLM-конфига уже вынесена в `.env`, но у инфраструктурных настроек всё ещё есть захардкоженные fallback-значения.
-- Нет централизованного tracing и structured logging по шагам.
+- Внутри agent workflow появился базовый structured logging и request-level tracing по шагам.
+- При этом пока нет единой observability-схемы для всего приложения, отдельных метрик, alerting и внешнего trace backend-а.
 - Нет alerting, request budget control, step limits и policy enforcement.
 - Нет CI-ориентированной проверки агентного поведения.
 
@@ -232,10 +240,10 @@
 
 ### Этап 2. Controlled agentic RAG
 
-- Добавить новый маршрут вида `/agent/chat`.
-- Ввести `session_id`, agent state и bounded workflow.
+- Развивать уже добавленный маршрут `/agent/chat` в сторону более умного agent workflow.
+- Расширить использование `session_id`, agent state и bounded workflow за пределы текущего rule-based сценария.
 - Реализовать router: direct answer, retrieve, clarify, refuse.
-- Добавить structured response с `answer`, `citations`, `confidence`, `refusal_reason`.
+- Обогащать structured response и downstream-контракты без потери обратной совместимости.
 
 ### Этап 3. Memory и guardrails
 

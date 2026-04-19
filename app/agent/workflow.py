@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from time import perf_counter
 from uuid import uuid4
 
 from app.agent.guardrails import check_input_guardrails
+from app.agent.observability import log_agent_event
 from app.agent.runtime import AgentRuntime
 from app.agent.schemas import AgentChatRequest, AgentChatResponse, AgentCitation, AgentTraceStep
 from app.agent.service_tools import register_default_tools
@@ -11,6 +13,10 @@ from app.agent.state import AgentRoutingDecision
 from app.agent.validators import validate_agent_response
 
 HistorySaver = Callable[[str, str, str], None]
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return max(int((perf_counter() - started_at) * 1000), 0)
 
 
 def _resolve_route(search_type: str) -> tuple[AgentRoutingDecision, str]:
@@ -141,6 +147,7 @@ def execute_agent_chat(
     runtime: AgentRuntime | None = None,
     history_saver: HistorySaver | None = None,
 ) -> AgentChatResponse:
+    workflow_started_at = perf_counter()
     if not request.question.strip():
         raise ValueError("Вопрос не может быть пустым")
 
@@ -155,6 +162,14 @@ def execute_agent_chat(
     state = agent_runtime.create_state(
         question=request.question,
         session_id=session_id,
+    )
+    log_agent_event(
+        "request_started",
+        request_id=state.request_id,
+        session_id=state.session_id,
+        search_type=request.search_type,
+        status="running",
+        metadata={"question_length": len(request.question.strip())},
     )
     state.add_trace_step(
         AgentTraceStep(
@@ -173,6 +188,14 @@ def execute_agent_chat(
             detail=guard_message,
         )
     )
+    log_agent_event(
+        "input_guardrails_checked",
+        request_id=state.request_id,
+        session_id=state.session_id,
+        search_type=request.search_type,
+        status="completed" if input_allowed else "failed",
+        refusal_reason=guard_reason if not input_allowed else None,
+    )
     if not input_allowed:
         response = _build_refusal_response(
             request=request,
@@ -183,6 +206,18 @@ def execute_agent_chat(
             trace=list(state.trace),
         )
         agent_runtime.finalize_response(state, response)
+        log_agent_event(
+            "request_completed",
+            request_id=state.request_id,
+            session_id=state.session_id,
+            search_type=request.search_type,
+            outcome="refusal",
+            refusal_reason=response.refusal_reason,
+            cached=response.cached,
+            confidence=response.confidence,
+            duration_ms=_elapsed_ms(workflow_started_at),
+            metadata={"trace_steps": len(response.trace)},
+        )
         return response
 
     routing_decision, search_tool = _resolve_route(request.search_type)
@@ -192,12 +227,24 @@ def execute_agent_chat(
         selected_tool=search_tool,
     )
 
+    cache_lookup_started_at = perf_counter()
     cache_result = agent_runtime.execute_tool(
         state,
         "get_cached_answer",
         {"question": request.question, "search_type": request.search_type},
     )
-    if cache_result.success and cache_result.output.get("cache_hit"):
+    cache_hit = cache_result.success and bool(cache_result.output.get("cache_hit"))
+    log_agent_event(
+        "cache_lookup_completed",
+        request_id=state.request_id,
+        session_id=state.session_id,
+        search_type=request.search_type,
+        route=routing_decision.value,
+        status="completed" if cache_result.success else "failed",
+        cached=cache_hit,
+        duration_ms=_elapsed_ms(cache_lookup_started_at),
+    )
+    if cache_hit:
         cached_payload = cache_result.output.get("value") or {}
         response = _build_success_response(
             request=request,
@@ -219,6 +266,17 @@ def execute_agent_chat(
                 detail=validation_message,
             )
         )
+        log_agent_event(
+            "response_validated",
+            request_id=state.request_id,
+            session_id=state.session_id,
+            search_type=request.search_type,
+            route=routing_decision.value,
+            status="completed" if is_valid else "failed",
+            refusal_reason=refusal_reason if not is_valid else None,
+            cached=True,
+            confidence=response.confidence if is_valid else 0.0,
+        )
         if not is_valid:
             response = _build_refusal_response(
                 request=request,
@@ -234,9 +292,34 @@ def execute_agent_chat(
                 cached=True,
             )
             agent_runtime.finalize_response(state, response)
+            log_agent_event(
+                "request_completed",
+                request_id=state.request_id,
+                session_id=state.session_id,
+                search_type=request.search_type,
+                route=routing_decision.value,
+                outcome="refusal",
+                refusal_reason=response.refusal_reason,
+                cached=response.cached,
+                confidence=response.confidence,
+                duration_ms=_elapsed_ms(workflow_started_at),
+                metadata={"trace_steps": len(response.trace)},
+            )
             return response
         history_saver(request.question, response.answer, request.search_type)
         agent_runtime.finalize_response(state, response)
+        log_agent_event(
+            "request_completed",
+            request_id=state.request_id,
+            session_id=state.session_id,
+            search_type=request.search_type,
+            route=routing_decision.value,
+            outcome="success",
+            cached=response.cached,
+            confidence=response.confidence,
+            duration_ms=_elapsed_ms(workflow_started_at),
+            metadata={"trace_steps": len(response.trace), "citation_count": len(response.citations)},
+        )
         return response
 
     search_result = agent_runtime.execute_tool(
@@ -246,12 +329,26 @@ def execute_agent_chat(
     )
     if not search_result.success:
         agent_runtime.fail(state, search_result.error or "Ошибка инструмента")
-        return _build_failure_response(
+        response = _build_failure_response(
             request=request,
             request_id=state.request_id,
             session_id=state.session_id,
             trace=list(state.trace),
         )
+        log_agent_event(
+            "request_completed",
+            request_id=state.request_id,
+            session_id=state.session_id,
+            search_type=request.search_type,
+            route=routing_decision.value,
+            outcome="failure",
+            refusal_reason=response.refusal_reason,
+            cached=response.cached,
+            confidence=response.confidence,
+            duration_ms=_elapsed_ms(workflow_started_at),
+            metadata={"trace_steps": len(response.trace)},
+        )
+        return response
 
     payload = {
         "answer": search_result.output.get("answer", ""),
@@ -276,6 +373,16 @@ def execute_agent_chat(
                 detail=cache_write_result.error,
             )
         )
+        log_agent_event(
+            "cache_write_skipped",
+            request_id=state.request_id,
+            session_id=state.session_id,
+            search_type=request.search_type,
+            route=routing_decision.value,
+            status="failed",
+            duration_ms=0,
+            metadata={"error": cache_write_result.error},
+        )
 
     response = _build_success_response(
         request=request,
@@ -297,6 +404,17 @@ def execute_agent_chat(
             detail=validation_message,
         )
     )
+    log_agent_event(
+        "response_validated",
+        request_id=state.request_id,
+        session_id=state.session_id,
+        search_type=request.search_type,
+        route=routing_decision.value,
+        status="completed" if is_valid else "failed",
+        refusal_reason=refusal_reason if not is_valid else None,
+        cached=False,
+        confidence=response.confidence if is_valid else 0.0,
+    )
     if not is_valid:
         response = _build_refusal_response(
             request=request,
@@ -312,7 +430,32 @@ def execute_agent_chat(
             cached=False,
         )
         agent_runtime.finalize_response(state, response)
+        log_agent_event(
+            "request_completed",
+            request_id=state.request_id,
+            session_id=state.session_id,
+            search_type=request.search_type,
+            route=routing_decision.value,
+            outcome="refusal",
+            refusal_reason=response.refusal_reason,
+            cached=response.cached,
+            confidence=response.confidence,
+            duration_ms=_elapsed_ms(workflow_started_at),
+            metadata={"trace_steps": len(response.trace)},
+        )
         return response
     history_saver(request.question, response.answer, request.search_type)
     agent_runtime.finalize_response(state, response)
+    log_agent_event(
+        "request_completed",
+        request_id=state.request_id,
+        session_id=state.session_id,
+        search_type=request.search_type,
+        route=routing_decision.value,
+        outcome="success",
+        cached=response.cached,
+        confidence=response.confidence,
+        duration_ms=_elapsed_ms(workflow_started_at),
+        metadata={"trace_steps": len(response.trace), "citation_count": len(response.citations)},
+    )
     return response

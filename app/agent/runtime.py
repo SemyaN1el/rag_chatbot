@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from time import perf_counter
+
+from app.agent.observability import log_agent_event
 from app.agent.schemas import AgentResponse, AgentTraceStep, ToolCall, ToolResult
 from app.agent.state import AgentRoutingDecision, AgentState
 from app.agent.tools import ToolRegistry
@@ -29,6 +32,13 @@ class AgentRuntime:
                 detail="Создано начальное состояние agent runtime.",
             )
         )
+        log_agent_event(
+            "runtime_initialized",
+            request_id=state.request_id,
+            session_id=state.session_id,
+            status="completed",
+            metadata={"trace_steps": len(state.trace)},
+        )
         return state
 
     def apply_routing_decision(
@@ -47,6 +57,14 @@ class AgentRuntime:
                 tool_name=selected_tool,
             )
         )
+        log_agent_event(
+            "routing_decision_applied",
+            request_id=state.request_id,
+            session_id=state.session_id,
+            route=decision.value,
+            tool_name=selected_tool,
+            status="completed",
+        )
         return state
 
     def execute_tool(
@@ -55,12 +73,14 @@ class AgentRuntime:
         tool_name: str,
         arguments: dict,
     ) -> ToolResult:
+        started_at = perf_counter()
         result = self.tool_registry.execute(
             ToolCall(
                 tool_name=tool_name,
                 arguments=arguments,
             )
         )
+        duration_ms = max(int((perf_counter() - started_at) * 1000), 0)
         state.add_tool_result(result)
         state.add_trace_step(
             AgentTraceStep(
@@ -69,8 +89,19 @@ class AgentRuntime:
                 name="tool_executed",
                 detail="Инструмент выполнен успешно." if result.success else result.error,
                 tool_name=tool_name,
+                duration_ms=duration_ms,
                 metadata={"arguments": arguments},
             )
+        )
+        log_agent_event(
+            "tool_executed",
+            request_id=state.request_id,
+            session_id=state.session_id,
+            route=state.routing_decision.value,
+            tool_name=tool_name,
+            status="completed" if result.success else "failed",
+            duration_ms=duration_ms,
+            metadata={"argument_keys": sorted(arguments.keys())},
         )
         return result
 
@@ -89,5 +120,13 @@ class AgentRuntime:
                 name="runtime_failed",
                 detail=error_message,
             )
+        )
+        log_agent_event(
+            "runtime_failed",
+            request_id=state.request_id,
+            session_id=state.session_id,
+            route=state.routing_decision.value,
+            status="failed",
+            metadata={"error": error_message},
         )
         return state
