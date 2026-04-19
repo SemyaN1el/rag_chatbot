@@ -140,6 +140,7 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 После запуска доступны:
 - `GET /health`
 - `POST /chat/ask`
+- `POST /agent/chat`
 - `GET /chat/history`
 - `DELETE /chat/cache`
 - Swagger UI: `http://127.0.0.1:8000/docs`
@@ -152,6 +153,27 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
   "search_type": "vector"
 }
 ```
+
+Пример agent-запроса:
+
+```json
+{
+  "question": "Какая форма итоговой государственной аттестации предусмотрена документом?",
+  "search_type": "vector",
+  "session_id": "session-123"
+}
+```
+
+Agent endpoint возвращает структурированный ответ с:
+
+- `request_id`
+- `session_id`
+- `search_type`
+- `answer`
+- `citations`
+- `confidence`
+- `refusal_reason`
+- `trace`
 
 ### 4. Оценка качества
 

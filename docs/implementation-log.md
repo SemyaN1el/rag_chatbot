@@ -142,3 +142,44 @@
 
 - Следующий шаг: подключить tool registry и новый bounded workflow в `/agent/chat`.
 - После этого можно добавлять guardrails v1 и трассировку шагов уже на реальном запросе.
+
+### [2026-04-19] История 3: первый agent endpoint
+
+**Статус:** выполнено
+
+**Цель:** подключить `AgentRuntime`, `ToolRegistry` и bounded workflow к реальному API-маршруту `/agent/chat`, не ломая существующий `/chat/ask`.
+
+**Чеклист выполненного:**
+
+- [x] Добавлены `AgentChatRequest` и `AgentChatResponse` для нового публичного API-контракта.
+- [x] Реализован workflow `input validation -> routing -> cache lookup -> retrieval -> cache write -> response`.
+- [x] Добавлен новый маршрут `POST /agent/chat`.
+- [x] Сохранён legacy-маршрут `POST /chat/ask` без изменения поведения.
+- [x] Добавлена контролируемая деградация при ошибке retrieval tool.
+- [x] Добавлены API-тесты на vector/hybrid сценарии, cache hit, tool failure и пустой вопрос.
+- [x] Обновлён `readme.md` и текущий срез проекта в `docs/current-results.md`.
+
+**Изменённые файлы:**
+
+- `app/agent/__init__.py`
+- `app/agent/schemas.py`
+- `app/agent/runtime.py`
+- `app/agent/workflow.py`
+- `app/routers/agent.py`
+- `app/main.py`
+- `tests/test_agent_router.py`
+- `readme.md`
+- `docs/current-results.md`
+- `docs/implementation-log.md`
+
+**Проверка:**
+
+- Запустить unit/API-тесты через `python -m unittest discover -s tests -v`.
+- Проверить, что `/agent/chat` возвращает структурированный agent response.
+- Проверить, что cache hit не приводит к вызову retrieval tool.
+- Проверить, что failure внутри retrieval tool не валит endpoint.
+
+**Известные follow-up пункты:**
+
+- Следующий шаг: добавить guardrails v1 и отдельный validator output-а.
+- После этого можно расширять routing и memory без поломки публичного контракта `/agent/chat`.

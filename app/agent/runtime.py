@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.agent.schemas import AgentResponse, AgentTraceStep
+from app.agent.schemas import AgentResponse, AgentTraceStep, ToolCall, ToolResult
 from app.agent.state import AgentRoutingDecision, AgentState
 from app.agent.tools import ToolRegistry
 
@@ -48,6 +48,31 @@ class AgentRuntime:
             )
         )
         return state
+
+    def execute_tool(
+        self,
+        state: AgentState,
+        tool_name: str,
+        arguments: dict,
+    ) -> ToolResult:
+        result = self.tool_registry.execute(
+            ToolCall(
+                tool_name=tool_name,
+                arguments=arguments,
+            )
+        )
+        state.add_tool_result(result)
+        state.add_trace_step(
+            AgentTraceStep(
+                kind="tool",
+                status="completed" if result.success else "failed",
+                name="tool_executed",
+                detail="Инструмент выполнен успешно." if result.success else result.error,
+                tool_name=tool_name,
+                metadata={"arguments": arguments},
+            )
+        )
+        return result
 
     def finalize_response(self, state: AgentState, response: AgentResponse) -> AgentState:
         state.complete(response)

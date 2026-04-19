@@ -64,14 +64,22 @@
 - `ToolRegistry.execute()` теперь возвращает структурированный `ToolResult` даже при ошибках инструмента.
 - Для tool layer добавлены отдельные unit-тесты на регистрацию, успешные вызовы и обработку ошибок.
 
+### Первый agent endpoint
+
+- Добавлен отдельный маршрут `POST /agent/chat`, не ломающий legacy-эндпоинт `POST /chat/ask`.
+- Реализован bounded workflow: input validation -> routing -> cache lookup -> retrieval tool -> cache write -> response.
+- Ответы `/agent/chat` возвращаются в структурированном агентном формате с `request_id`, `session_id`, `citations`, `confidence`, `refusal_reason` и `trace`.
+- Ошибка retrieval tool не валит endpoint, а превращается в контролируемый agent response с отказом и trace.
+- Добавлены API-тесты на успешные сценарии, cache hit, контролируемый failure и валидацию пустого вопроса.
+
 ## Текущие ограничения
 
 ### Архитектурные
 
 - Система пока является RAG-сервисом, а не полноценной агентной runtime-системой.
 - Появился начальный каркас `app/agent`, но он ещё не подключён к API и реальному workflow обработки запросов.
-- Появился начальный tool layer, но он ещё не встроен в полноценный orchestration-цикл обработки запросов.
-- Нет отдельного router/planner-слоя, который выбирает стратегию обработки запроса на runtime.
+- Появился первый рабочий agent endpoint, но routing пока rule-based и опирается только на `search_type`.
+- Нет отдельного planner-слоя, который выбирает стратегию обработки запроса по содержанию самого вопроса.
 - Memory, guardrails и validators ещё не интегрированы в единый pipeline.
 
 ### Retrieval и knowledge layer

@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from app.routers.agent import router as agent_router
 from app.routers.chat import router as chat_router
 from app.services.history import init_db
 
@@ -10,6 +11,7 @@ app = FastAPI(
 
 # Подключаем роутеры
 app.include_router(chat_router)
+app.include_router(agent_router)
 
 
 @app.on_event("startup")

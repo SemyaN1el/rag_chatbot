@@ -119,3 +119,26 @@ class AgentResponse(BaseModel):
     @property
     def is_refusal(self) -> bool:
         return self.refusal_reason is not None
+
+
+class AgentChatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    question: str
+    search_type: Literal["vector", "hybrid"] = "vector"
+    session_id: str | None = None
+
+    @field_validator("session_id")
+    @classmethod
+    def normalize_session_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+
+class AgentChatResponse(AgentResponse):
+    request_id: str
+    session_id: str
+    search_type: Literal["vector", "hybrid"]
+    cached: bool = False
