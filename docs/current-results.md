@@ -21,7 +21,7 @@
 - Qdrant для retrieval;
 - PostgreSQL для истории;
 - Redis для кэша и краткой памяти сессии;
-- eval-скрипт на RAGAS;
+- offline agent eval harness с regression gate;
 - Docker Compose для локального запуска сервисов.
 
 ## Что уже реализовано
@@ -45,10 +45,10 @@
 
 ### Оценка качества
 
-- Быстрый и полный eval-режим в `evaluate.py`.
-- Сравнение vector и hybrid retrieval.
-- Метрики `faithfulness`, `answer_relevancy`, `context_recall`.
-- Подготовленные eval-наборы в `data/`.
+- Legacy RAGAS eval удалён и заменён детерминированным `agent eval harness`.
+- `evaluate.py` теперь запускает regression suite по внешнему набору `data/agent_eval_cases.json`.
+- Agent eval проверяет `route`, `tool usage`, `refusal_reason`, citations, cache/memory behavior и latency.
+- JSON-отчёт сохраняется в `data/agent_eval_report.json`, а threshold failures завершают команду с non-zero exit code.
 
 ### LLM-провайдер и конфигурация
 
@@ -123,6 +123,14 @@
 - Неприоритетные side-effect шаги вроде `set_session_memory` теперь умеют мягко пропускаться через `optional_tool_skipped`, если бюджет почти исчерпан.
 - Добавлены API-тесты на `max_steps`, `max_tool_calls`, timeout, policy deny и controlled degradation.
 
+### Agent eval harness v1
+
+- Добавлен пакет `app/agent/evals` с отдельными schema, runner и metrics aggregation для agent-level regression checks.
+- Внешний датасет `data/agent_eval_cases.json` покрывает `direct_answer`, `clarify`, `refuse`, `unsafe_input`, `retrieve_vector`, `retrieve_hybrid`, `cache_hit`, `follow-up with memory`, `policy refusal` и `budget timeout`.
+- Runner исполняет реальные agent workflow-сценарии на детерминированных fixtures и сравнивает ожидаемые route/tool/citation/refusal/caching свойства с наблюдаемым trace.
+- Зафиксированы thresholds для `route_accuracy`, `tool_selection_accuracy`, `refusal_reason_accuracy`, `citation_validity`, `task_success_rate`, `cache_hit_rate`, `latency_ms_p95` и `estimated_cost_usd_mean`.
+- Добавлены unit-тесты на parsing, regression scoring и smoke-прогон полного eval suite.
+
 ## Текущие ограничения
 
 ### Архитектурные
@@ -159,7 +167,7 @@
 - Policy layer теперь умеет блокировать неразрешённые tool calls до фактического исполнения.
 - При этом пока нет единой observability-схемы для всего приложения, отдельных метрик, alerting и внешнего trace backend-а.
 - Нет alerting, adaptive budgets, cost monitoring и внешнего enforcement/backend-а для политик.
-- Нет CI-ориентированной проверки агентного поведения.
+- Появилась локальная и CI-friendly offline проверка агентного поведения, но она пока не привязана к реальному CI pipeline.
 
 ## Рекомендации по агентной архитектуре
 
@@ -237,7 +245,7 @@
 
 ### Eval
 
-Нужно расширить оценку качества от RAG-метрик к агентным сценариям. Базовый набор:
+Базовый agent eval harness уже появился. Следующее усиление стоит делать не через возврат к RAGAS, а через расширение agent-сценариев и автоматизацию прогона. Приоритетный набор направлений:
 
 - корректность ответа;
 - полезность для пользователя;
@@ -307,13 +315,37 @@
 
 История 8 закрыта: в runtime появились budget controls, policy checks и controlled degradation.
 
+История 9 закрыта: в проекте появился отдельный agent eval harness, а старая RAGAS-оценка удалена из активного потока.
+
+### Последняя проверка агента
+
+- Полный automated suite: `48/48 OK`
+- Agent eval harness: `10/10 OK`
+- `Redis`: доступен
+- `Qdrant`: доступен, коллекция `pdf_docs` содержит `157` points
+- `PostgreSQL`: startup `app.main` и запись history через live `/agent/chat` проходят
+- Live direct-answer сценарий: проходит
+- Прямой вызов `Groq`: проходит
+- Full online `/agent/chat` через `app.main`: `5/5 HTTP 200`, из них `4` success и `1` ожидаемый refusal
+- Первый real vector miss: около `17.6s`
+- Cache hit на том же вопросе: около `0.96s`
+- Follow-up с session memory: около `11.0s`, `memory_applied=true`
+- History в `PostgreSQL`: `delta = +4` записи после live-прогона
+- Подробный отчёт: `docs/agent-test-report-2026-04-19.md`
+- Краткий чеклист: `docs/agent-test-checklist-2026-04-19.md`
+
 ### История 9. Agent eval harness
+
+- Выполнена.
+- Offline regression suite уже встроен в проект через `evaluate.py`.
+- Следующее усиление истории 9 теперь связано не с реализацией harness, а с его запуском в CI и расширением live-сценариев.
 
 - Оценивать не только ответ, но и `route/tool choice`.
 - Добавить regression-набор для `direct_answer`, `clarify`, `refuse`, `retrieve_vector`, `retrieve_hybrid`.
 - Зафиксировать pass/fail критерии для agent behavior.
 - Добавить нормальные агентные метрики вместо исходного упора только на базовые RAG-метрики.
 - Включить как минимум: `route accuracy`, `tool selection accuracy`, `refusal quality`, `citation validity`, `groundedness`, `task success rate`, `latency`, `cost per request`, `cache hit rate`.
+- Подробная постановка вынесена в `docs/story-09-agent-eval-harness.md`.
 
 ### История 10. Context builder и memory policy
 

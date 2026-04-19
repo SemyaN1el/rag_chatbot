@@ -16,6 +16,3 @@ qdrant-client==1.17.1
 sentence-transformers==5.1.1
 pypdf==6.9.0
 rank-bm25==0.2.2
-
-datasets==4.3.0
-ragas==0.4.3

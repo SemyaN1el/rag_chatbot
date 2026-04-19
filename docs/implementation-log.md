@@ -516,3 +516,229 @@
 
 - Следующий шаг: `История 9` с eval harness и агентными метриками на route/tool choice.
 - После этого стоит вынести route/outcome/budget counters в отдельный metrics layer, а policy — постепенно усилить до richer output checks и audit-правил.
+
+### [2026-04-19] Формулировка Истории 9: agent eval harness
+
+**Статус:** выполнено
+
+**Цель:** превратить короткий backlog-пункт про `Историю 9` в рабочую markdown-постановку с чётким scope, acceptance criteria, метриками и рекомендуемой последовательностью реализации.
+
+**Чеклист выполненного:**
+
+- [x] Создан отдельный markdown-документ с постановкой `Истории 9`.
+- [x] Зафиксированы цель, user story и инженерная мотивация истории.
+- [x] Описан минимальный набор eval-кейсов для agent behavior.
+- [x] Зафиксирован минимальный набор agent-level метрик для `v1`.
+- [x] Добавлены acceptance criteria и рекомендуемые thresholds.
+- [x] Зафиксировано рекомендуемое разбиение реализации на маленькие шаги.
+- [x] В `docs/current-results.md` добавлена ссылка на подробную постановку.
+
+**Изменённые файлы:**
+
+- `docs/story-09-agent-eval-harness.md`
+- `docs/current-results.md`
+- `docs/implementation-log.md`
+
+**Проверка:**
+
+- Проверено, что подробная постановка `Истории 9` существует как отдельный markdown-файл.
+- Проверено, что roadmap в `docs/current-results.md` теперь ссылается на эту постановку.
+- Код проекта не менялся; задача касается только документации и backlog refinement.
+
+**Известные follow-up пункты:**
+
+- Следующий рабочий шаг: реализация `Истории 9` по зафиксированному markdown-плану.
+- Перед началом кода удобно решить, будет ли agent eval жить рядом со старым `evaluate.py` или как отдельный пакет `app/agent/evals`.
+
+---
+
+## История 9: Agent eval harness
+
+**Статус:** выполнено
+
+**Цель:** заменить старую answer-level оценку на детерминированный regression harness, который проверяет поведение agent runtime как системы: route, tools, refusals, citations, cache, memory и budget/policy degradation.
+
+**Чеклист выполненного:**
+
+- [x] Добавлен отдельный пакет `app/agent/evals` с `schemas.py`, `runner.py`, `metrics.py`.
+- [x] `evaluate.py` переведён на запуск нового agent eval suite и JSON-отчёта.
+- [x] Подготовлен внешний датасет `data/agent_eval_cases.json` с покрытием ключевых agent-сценариев.
+- [x] Legacy RAGAS-based evaluation и старые eval-наборы удалены из активного runtime и зависимостей проекта.
+- [x] Добавлены thresholds и regression gate с non-zero exit code при failed cases или metric failures.
+- [x] Добавлены unit-тесты на runner, dataset parsing и regression scoring.
+- [x] Обновлены README и текущий статус проекта под новый eval-подход.
+
+**Изменённые файлы:**
+
+- `app/agent/__init__.py`
+- `app/agent/runtime.py`
+- `app/agent/evals/__init__.py`
+- `app/agent/evals/schemas.py`
+- `app/agent/evals/metrics.py`
+- `app/agent/evals/runner.py`
+- `evaluate.py`
+- `data/agent_eval_cases.json`
+- `data/eval_questions.json` удалён
+- `data/eval_questions_quick.json` удалён
+- `tests/test_agent_eval_runner.py`
+- `pyproject.toml`
+- `requirements.txt`
+- `README.md`
+- `docs/current-results.md`
+- `docs/implementation-log.md`
+
+**Проверка:**
+
+- `python -m unittest discover -s tests -p "test_agent_eval_runner.py" -v`
+- `python -m unittest discover -s tests -v`
+
+**Известные follow-up пункты:**
+
+- Следующий шаг: привязать `evaluate.py` к реальному CI pipeline, чтобы regression gate запускался автоматически.
+- При расширении сценариев полезно добавить отдельный markdown-отчёт поверх JSON-артефакта, если он понадобится для ревью.
+
+---
+
+## Полноценное тестирование агента
+
+**Статус:** выполнено
+
+**Цель:** прогнать не только unit/eval слой, но и живую проверку агентного runtime на реальных зависимостях `Redis`, `Qdrant`, `PostgreSQL` и live tool path.
+
+**Чеклист выполненного:**
+
+- [x] Запущен полный automated test suite по каталогу `tests`.
+- [x] Запущен offline agent eval harness через `evaluate.py`.
+- [x] Проверена доступность `Redis`.
+- [x] Проверена доступность `Qdrant` и наличие рабочей коллекции.
+- [x] Проверен startup FastAPI-приложения.
+- [x] Проверен live direct-answer path на реальных tools.
+- [x] Проверен live retrieval path на реальных tools.
+- [x] Подготовлены отдельные markdown-артефакты с checklist и полным тест-отчётом.
+
+**Изменённые файлы:**
+
+- `docs/agent-test-checklist-2026-04-19.md`
+- `docs/agent-test-report-2026-04-19.md`
+- `docs/current-results.md`
+- `docs/implementation-log.md`
+
+**Проверка:**
+
+- `python -m unittest discover -s tests -v`
+- `python evaluate.py`
+- live smoke через `execute_agent_chat(...)` с `register_default_tools()`
+- startup smoke через `TestClient(app)`
+
+**Известные follow-up пункты:**
+
+- На хосте `app.main` не стартует из-за ошибки аутентификации PostgreSQL на `localhost:5432`.
+- Первый живой retrieval-запрос упирается в `workflow_timeout_exceeded` из-за cold start embeddings.
+- Повторный retrieval-запрос доходит до LLM layer, но падает с `Groq API 403 Forbidden`.
+
+---
+
+## Повторная проверка Groq
+
+**Статус:** выполнено
+
+**Цель:** перепроверить внешний LLM path отдельно от retrieval runtime и уточнить, является ли `Groq` текущим системным блокером агента.
+
+**Чеклист выполненного:**
+
+- [x] Выполнен прямой вызов `Groq` через `generate_text_from_prompt(...)`.
+- [x] Повторно выполнен live retrieval запрос через agent workflow.
+- [x] Обновлены markdown-отчёты по текущему статусу live path.
+
+**Изменённые файлы:**
+
+- `docs/agent-test-checklist-2026-04-19.md`
+- `docs/agent-test-report-2026-04-19.md`
+- `docs/current-results.md`
+- `docs/implementation-log.md`
+
+**Проверка:**
+
+- прямой вызов Groq вернул успешный ответ примерно за `1.9s`
+- live retrieval path снова завершился `workflow_timeout_exceeded`
+
+**Известные follow-up пункты:**
+
+- Groq как внешний провайдер сейчас отвечает корректно.
+- Главный воспроизводимый live-блокер сместился на `retrieval cold start > budget`.
+
+---
+
+## Увеличение timeout-лимитов и повторный прогон
+
+**Статус:** выполнено
+
+**Цель:** увеличить timeout-лимиты agent runtime и Groq-клиента, чтобы живой retrieval path не обрывался на минутных и более долгих ответах внешнего API.
+
+**Чеклист выполненного:**
+
+- [x] Увеличен `LLM_TIMEOUT_SECONDS` в конфиге и `.env`.
+- [x] Увеличен `AGENT_MAX_RUNTIME_SECONDS` в конфиге и `.env`.
+- [x] Обновлён `.env.example` с новыми рекомендуемыми значениями.
+- [x] Повторно выполнен прямой вызов Groq.
+- [x] Повторно выполнен live retrieval smoke через agent workflow.
+- [x] Обновлены markdown-отчёты по текущему статусу live path.
+
+**Изменённые файлы:**
+
+- `config.py`
+- `.env`
+- `.env.example`
+- `docs/agent-test-checklist-2026-04-19.md`
+- `docs/agent-test-report-2026-04-19.md`
+- `docs/current-results.md`
+- `docs/implementation-log.md`
+
+**Проверка:**
+
+- прямой вызов Groq: `OK`, около `1.5s`
+- live retrieval path: `OK`, около `30s`, route `retrieve_vector`, `3` citations
+
+**Известные follow-up пункты:**
+
+- Startup FastAPI по-прежнему упирается в PostgreSQL auth mismatch.
+- Cold start embeddings остаётся дорогим по latency и просится в отдельную оптимизацию.
+
+---
+
+## Online `/agent/chat` через `app.main`
+
+**Статус:** выполнено
+
+**Цель:** прогнать настоящий HTTP `/agent/chat` через `app.main` без dependency overrides и подтвердить end-to-end работу `Redis + Qdrant + Groq + PostgreSQL`.
+
+**Чеклист выполненного:**
+
+- [x] Поднят реальный `FastAPI`-сервер на базе `app.main` со startup-хуком.
+- [x] Выполнен online-прогон `POST /agent/chat` по HTTP без fixture/runtime bypass.
+- [x] Проверены сценарии `vector miss`, `cache hit`, `memory follow-up` и `out_of_scope refusal`.
+- [x] Подтверждено, что `session memory` реально применяется на follow-up запросе.
+- [x] Подтверждено, что `PostgreSQL` history path работает на живом `/agent/chat`.
+- [x] Обновлены markdown-отчёт, чеклист и текущий статус проекта.
+
+**Изменённые файлы:**
+
+- `docs/agent-test-checklist-2026-04-19.md`
+- `docs/agent-test-report-2026-04-19.md`
+- `docs/current-results.md`
+- `docs/implementation-log.md`
+
+**Проверка:**
+
+- `app.main` startup: `OK`, `/health = 200`
+- `POST /agent/chat` live-прогон: `5/5 HTTP 200`
+- `success = 4`, `expected refusal = 1`
+- `vector first pass`: около `17.6s`, `retrieve_vector`, `3` citations
+- `cache hit`: около `0.96s`, `cached=true`
+- `memory follow-up`: около `11.0s`, `memory_applied=true`
+- `PostgreSQL history`: `before_count = 0`, `after_count = 4`, `delta = +4`
+
+**Известные follow-up пункты:**
+
+- Cold start embeddings остаётся основным latency-узким местом.
+- Имеет смысл вынести live benchmark в отдельную команду/скрипт, чтобы гонять онлайн-метрики регулярно.

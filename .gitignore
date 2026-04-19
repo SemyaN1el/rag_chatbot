@@ -16,5 +16,6 @@ qdrant_storage/
 
 *.log
 eval_*.log
+data/agent_eval_report.json
 
 data/*.pdf

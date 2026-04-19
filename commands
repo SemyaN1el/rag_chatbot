@@ -28,7 +28,7 @@ git rm -r --cached __pycache__/
 
 # Коммитим всё что написали в ветке
 git add .
-git commit -m "feat: hybrid search, hybrid chat, ragas evaluation"
+git commit -m "feat: hybrid search, hybrid chat, evaluation"
 
 # Пушим ветку на GitHub
 git push origin feature/hybrid-search
@@ -50,5 +50,5 @@ git log --oneline
 
 Итоговая история в `git log` будет выглядеть примерно так:
 ```
-a3f9c21 (HEAD -> main) feat: hybrid search, hybrid chat, ragas evaluation
+a3f9c21 (HEAD -> main) feat: hybrid search, hybrid chat, evaluation
 be76b57 init: базовый RAG чат-бот

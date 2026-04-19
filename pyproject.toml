@@ -25,10 +25,8 @@ dependencies = [
     "sentence-transformers==5.1.1",
     "pypdf==6.9.0",
     "rank-bm25==0.2.2",
-    "datasets==4.3.0",
-    "ragas==0.4.3",
 ]
 
 [tool.setuptools]
 py-modules = ["chat", "config", "evaluate", "hybrid_chat", "hybrid_search", "ingest"]
-packages = ["app", "app.agent", "app.routers", "app.services"]
+packages = ["app", "app.agent", "app.agent.evals", "app.routers", "app.services"]

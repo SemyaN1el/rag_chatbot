@@ -16,7 +16,6 @@
 - rank-bm25
 - PostgreSQL
 - Redis
-- RAGAS
 
 ## Структура проекта
 
@@ -182,24 +181,18 @@ Agent endpoint возвращает структурированный отве�
 - `refusal_reason`
 - `trace`
 
-### 4. Оценка качества
+### 4. Agent eval harness
 
-Быстрый прогон:
-
-```bash
-python evaluate.py --quick
-```
-
-Полный прогон:
+Базовый regression-прогон:
 
 ```bash
 python evaluate.py
 ```
 
-Свой eval-набор:
+Свой eval-набор и путь для отчёта:
 
 ```bash
-python evaluate.py data/my_eval_questions.json
+python evaluate.py data/my_agent_eval_cases.json --output data/my_agent_eval_report.json
 ```
 
 Формат eval-файла:
@@ -207,11 +200,35 @@ python evaluate.py data/my_eval_questions.json
 ```json
 [
   {
-    "question": "В каком семестре проводится итоговая аттестация?",
-    "ground_truth": "Итоговая государственная аттестация проводится в восьмом семестре."
+    "id": "retrieve_vector_001",
+    "category": "retrieve_vector",
+    "request": {
+      "question": "В каком семестре проводится экзамен?",
+      "search_type": "vector",
+      "session_id": "eval-session-1"
+    },
+    "expected": {
+      "route": "retrieve_vector",
+      "outcome": "success",
+      "search_type": "vector",
+      "exact_tool_names": [
+        "get_session_memory",
+        "get_cached_answer",
+        "search_vector",
+        "set_cached_answer",
+        "set_session_memory"
+      ],
+      "min_citation_count": 1,
+      "max_citation_count": 1,
+      "answer_contains": ["экзамен"],
+      "cached": false,
+      "memory_applied": false
+    }
   }
 ]
 ```
+
+По умолчанию `evaluate.py` читает `data/agent_eval_cases.json`, пишет JSON-отчёт в `data/agent_eval_report.json` и завершает процесс с `exit code 1`, если есть проваленные кейсы или threshold failures.
 
 ## Архитектура
 
@@ -250,9 +267,13 @@ PDF
 
 ## Метрики качества
 
-- `faithfulness` — не галлюцинирует ли модель
-- `answer_relevancy` — релевантен ли ответ вопросу
-- `context_recall` — полно ли найден нужный контекст
+- `route_accuracy` — корректность выбранного сценария agent workflow
+- `tool_selection_accuracy` — правильность вызванных tools
+- `refusal_reason_accuracy` — корректность причины отказа
+- `citation_validity` — соблюдение ожиданий по citations
+- `task_success_rate` — доля успешно пройденных кейсов
+- `cache_hit_rate` — корректность cache-hit поведения
+- `latency_ms_p50` и `latency_ms_p95` — базовая latency-регрессия
 
 ## Конфигурация
 
